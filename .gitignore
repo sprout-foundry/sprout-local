@@ -1,0 +1,7 @@
+# Build artifacts
+sprout-local
+*.log
+
+# Session state
+.sprout/
+.DS_Store

@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chatllm</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230184bc'/%3E%3Ctext x='16' y='22' font-family='system-ui' font-size='18' font-weight='700' fill='white' text-anchor='middle'%3Ec%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      /* One Light / One Dark palette (ported from the chat/ web UI) */
+      --bg: #fafafa; --text: #383a42; --sec: #a0a1a7; --border: #e4e7eb;
+      --accent: #0184bc; --accent-soft: #e7f3fa; --hover: #005cc5; --box: #ffffff;
+      --user-bubble: #0184bc; --user-text: #ffffff; --err: #ca1243;
+      --err-soft: #fdeef2; --warn: #c18401; --warn-soft: #fdf6e3;
+      --code-bg: #f5f6f7; --shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    body.dark-mode {
+      --bg: #282c34; --text: #abb2bf; --sec: #7f8794; --border: #3e4451;
+      --accent: #61afef; --accent-soft: #2c3a47; --hover: #528bff; --box: #2c313a;
+      --user-bubble: #3d4a70; --user-text: #d7dae0; --err: #f2777a;
+      --err-soft: #3e2a2e; --warn: #d19a66; --warn-soft: #3a332a;
+      --code-bg: #21252b; --shadow: 0 1px 3px rgba(0,0,0,.3);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px; line-height: 1.55;
+      display: flex; flex-direction: column; height: 100dvh;
+    }
+
+    /* ── header ─────────────────────────────────────────────────────── */
+    header {
+      display: flex; align-items: center; gap: .6rem; padding: .55rem 1rem;
+      border-bottom: 1px solid var(--border); background: var(--box);
+      position: sticky; top: 0; z-index: 5;
+    }
+    /* ── sidebar ────────────────────────────────────────────────────── */
+    #layout { flex: 1; display: flex; min-height: 0; }
+    #sidebar {
+      width: 240px; flex-shrink: 0; border-right: 1px solid var(--border);
+      background: var(--box); display: flex; flex-direction: column; min-height: 0;
+    }
+    #sidebar .side-head {
+      padding: .7rem .7rem .5rem; display: flex; gap: .5rem; align-items: center;
+    }
+    #sidebar .side-head h2 {
+      margin: 0; font-size: .78rem; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--sec); flex: 1;
+    }
+    #conv-list { flex: 1; overflow-y: auto; padding: 0 .5rem .7rem; }
+    .conv {
+      display: flex; align-items: center; gap: .4rem; padding: .45rem .6rem;
+      border-radius: 8px; cursor: pointer; margin-bottom: .15rem;
+    }
+    .conv:hover { background: var(--accent-soft); }
+    .conv.active { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+    .conv .t { flex: 1; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .conv .when { font-size: .68rem; color: var(--sec); flex-shrink: 0; }
+    .conv .del {
+      visibility: hidden; border: none; background: none; color: var(--sec);
+      font-size: .8rem; padding: 0 .15rem; cursor: pointer;
+    }
+    .conv:hover .del { visibility: visible; }
+    .conv .del:hover { color: var(--err); }
+    #conv-list .none { color: var(--sec); font-size: .8rem; padding: .5rem .6rem; }
+    #sidebar-toggle { display: none; }
+    @media (max-width: 860px) {
+      #sidebar {
+        position: fixed; top: 0; bottom: 0; left: 0; z-index: 20;
+        transform: translateX(-100%); transition: transform .18s ease;
+        box-shadow: var(--shadow);
+      }
+      #sidebar.open { transform: none; }
+      #sidebar-toggle { display: inline-block; }
+      #scrim {
+        display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 15;
+      }
+      #scrim.show { display: block; }
+    }
+
+    .brand { display: flex; align-items: center; gap: .5rem; font-weight: 700; font-size: 1rem; margin-right: auto; }
+    .brand svg { display: block; }
+    #conn { display: flex; align-items: center; gap: .35rem; font-size: .75rem; color: var(--sec); }
+    #conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sec); }
+    #conn.on .dot  { background: #50a14f; }
+    #conn.off .dot { background: var(--err); }
+    select, button {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: .38rem .6rem; cursor: pointer; font: inherit; font-size: .85rem;
+    }
+    select:hover, button:hover { border-color: var(--accent); }
+    select { max-width: 16rem; }
+    .icon-btn { padding: .38rem .5rem; line-height: 1; }
+
+    /* ── thread ─────────────────────────────────────────────────────── */
+    #thread-wrap { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+    #thread {
+      max-width: 52rem; margin: 0 auto; padding: 1.25rem 1rem 2rem;
+      display: flex; flex-direction: column; gap: 1.1rem;
+    }
+    #empty {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: .6rem; color: var(--sec); padding: 2rem 1rem;
+    }
+    #empty .mark {
+      width: 52px; height: 52px; border-radius: 14px; background: var(--accent);
+      color: #fff; font-size: 28px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; margin-bottom: .4rem;
+    }
+    #empty h2 { margin: 0; color: var(--text); font-size: 1.15rem; }
+    #empty p { margin: 0; font-size: .9rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin-top: 1rem; }
+    .chips button { border-radius: 999px; padding: .4rem .85rem; font-size: .85rem; }
+    .chips button:hover { background: var(--accent-soft); }
+
+    .msg { display: flex; flex-direction: column; }
+    .msg .who {
+      font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--sec); margin-bottom: .25rem;
+    }
+    .msg .content { overflow-wrap: break-word; min-width: 0; }
+    .msg.user { align-items: flex-end; }
+    .msg.user .content {
+      background: var(--user-bubble); color: var(--user-text);
+      padding: .55rem .85rem; border-radius: 14px 14px 4px 14px;
+      max-width: 78%; white-space: pre-wrap; box-shadow: var(--shadow);
+    }
+    .msg.assistant .content { padding: 0 .1rem; }
+    .msg.assistant.streaming.has-text .content::after {
+      content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .thinking { display: inline-flex; gap: .3rem; align-items: center; color: var(--sec); padding: .2rem 0; }
+    .status { display: flex; align-items: center; gap: .5rem; color: var(--sec); font-size: .88rem; }
+    .thinking i {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--sec);
+      animation: bounce 1.2s ease-in-out infinite;
+    }
+    .thinking i:nth-child(2) { animation-delay: .15s; }
+    .thinking i:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce { 0%,60%,100% { transform: none; opacity: .4; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+    .msg.note { align-items: center; }
+    .msg.note .content {
+      font-size: .82rem; color: var(--warn); background: var(--warn-soft);
+      border: 1px solid var(--warn); border-radius: 999px; padding: .3rem .9rem;
+    }
+    .msg.toolchip { align-items: center; }
+    .msg.toolchip .content {
+      font-size: .78rem; color: var(--sec); background: var(--box);
+      border: 1px solid var(--border); border-radius: 999px; padding: .22rem .8rem;
+    }
+    .msg.toolchip .content .ok { color: #50a14f; }
+    .msg.toolchip .content .fail { color: var(--err); }
+    .chip-detail { margin-top: .4rem; text-align: left; }
+    .chip-detail .chip-h {
+      font-size: .68rem; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--sec); margin: .35rem 0 .15rem;
+    }
+    .chip-detail .rawmd {
+      white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+      font-size: .78rem; color: var(--text); background: var(--code-bg);
+      border: 1px solid var(--border); border-radius: 6px; padding: .35rem .55rem;
+      max-height: 12rem; overflow-y: auto;
+    }
+    .msg.error { align-items: center; }
+    .msg.error .content {
+      font-size: .82rem; color: var(--err); background: var(--err-soft);
+      border: 1px solid var(--err); border-radius: 999px; padding: .3rem .9rem;
+    }
+    .divider { display: flex; align-items: center; gap: .8rem; color: var(--sec); font-size: .78rem; }
+    .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+    .metrics {
+      font-size: .7rem; color: var(--sec); text-align: left;
+      padding: 0 .1rem; margin-top: -0.7rem; letter-spacing: .02em;
+    }
+
+    .actions { display: flex; gap: .4rem; margin-top: .35rem; opacity: 0; transition: opacity .15s; }
+    .msg:hover .actions { opacity: 1; }
+    .actions button {
+      font-size: .72rem; padding: .15rem .5rem; border-radius: 6px; color: var(--sec);
+    }
+    .actions button:hover { color: var(--accent); border-color: var(--accent); }
+    .content .rawmd {
+      white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+      font-size: .82rem; color: var(--sec); background: var(--code-bg);
+      border: 1px dashed var(--border); border-radius: 8px; padding: .5rem .7rem;
+    }
+
+    /* markdown content */
+    .content p { margin: .3rem 0; }
+    .content :is(h1, h2, h3, h4, h5, h6) { margin: .7rem 0 .3rem; line-height: 1.3; }
+    .content h1 { font-size: 1.25rem; } .content h2 { font-size: 1.15rem; }
+    .content h3, .content h4, .content h5, .content h6 { font-size: 1.03rem; }
+    .content ul, .content ol { margin: .3rem 0; padding-left: 1.4rem; }
+    .content li { margin: .18rem 0; }
+    .content blockquote {
+      margin: .4rem 0; padding: .15rem .8rem; border-left: 3px solid var(--accent);
+      color: var(--sec);
+    }
+    .content hr { border: none; border-top: 1px solid var(--border); margin: .6rem 0; }
+    .content a { color: var(--accent); }
+    .content code {
+      font-family: ui-monospace, "SF Mono", "Fira Code", Menlo, monospace; font-size: .88em;
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+      padding: .06rem .3rem;
+    }
+    .codeblock { position: relative; margin: .5rem 0; }
+    .codeblock .lang {
+      position: absolute; top: .35rem; right: 3.4rem; font-size: .68rem;
+      color: var(--sec); text-transform: uppercase; letter-spacing: .05em;
+    }
+    .codeblock .copy {
+      position: absolute; top: .3rem; right: .35rem; font-size: .7rem; padding: .12rem .45rem;
+      background: var(--box); opacity: 0; transition: opacity .15s;
+    }
+    .codeblock:hover .copy, .codeblock .copy:focus { opacity: 1; }
+    .content pre {
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: .6rem .7rem; overflow-x: auto; margin: 0; font-size: .86rem; line-height: 1.5;
+    }
+    .content pre code { background: none; border: none; padding: 0; }
+    .tok-kw  { color: #c678dd; }
+    .tok-str { color: #98c379; }
+    .tok-com { color: #7f848e; font-style: italic; }
+    .tok-num { color: #d19a66; }
+    body:not(.dark-mode) .tok-kw  { color: #a626a4; }
+    body:not(.dark-mode) .tok-str { color: #50a14f; }
+    body:not(.dark-mode) .tok-com { color: #a0a1a7; }
+    body:not(.dark-mode) .tok-num { color: #986801; }
+
+    /* ── composer ───────────────────────────────────────────────────── */
+    #composer-wrap { border-top: 1px solid var(--border); background: var(--box); }
+    #composer.busy #user-input { opacity: .55; }
+    #composer {
+      max-width: 52rem; margin: 0 auto; padding: .7rem 1rem .5rem;
+      display: flex; gap: .6rem; align-items: flex-end;
+    }
+    #user-input {
+      flex: 1; resize: none; font: inherit; color: var(--text);
+      background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+      padding: .6rem .8rem; min-height: 2.7rem; max-height: 40dvh;
+    }
+    #user-input:focus { outline: none; border-color: var(--accent); }
+    #send-btn {
+      min-width: 4.2rem; height: 2.7rem; border-radius: 12px;
+      background: var(--accent); color: #fff; border: none; font-weight: 600;
+    }
+    #send-btn:hover { background: var(--hover); }
+    #send-btn:disabled { opacity: .45; cursor: default; }
+    #send-btn.stop { background: var(--err); }
+    #hint {
+      max-width: 52rem; margin: 0 auto; padding: 0 1rem .6rem;
+      font-size: .72rem; color: var(--sec); text-align: center;
+    }
+    #jump {
+      position: fixed; bottom: 6.2rem; left: 50%; transform: translateX(-50%);
+      border-radius: 999px; padding: .35rem .9rem; display: none;
+      box-shadow: var(--shadow); background: var(--box); z-index: 4;
+    }
+    @media (max-width: 640px) {
+      .brand span { display: none; }
+      select { max-width: 9rem; }
+      #thread { padding: 1rem .75rem 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <button class="icon-btn" id="sidebar-toggle" title="Conversations" aria-label="Conversations">☰</button>
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><text x="16" y="22" font-size="18" font-weight="700" fill="white" text-anchor="middle">c</text></svg>
+      <span>chatllm</span>
+    </div>
+    <div id="conn" class="off" title="connection status"><span class="dot"></span><span id="conn-label">connecting</span></div>
+    <select id="model-select" aria-label="Model" title="Model"></select>
+    <button id="tools-toggle" title="Toggle tools (file tools + skills; run_command is REPL-only)" aria-label="Toggle tools">⚙</button>
+    <button class="icon-btn" id="toggle-mode" title="Toggle theme" aria-label="Toggle theme">☾</button>
+  </header>
+
+  <div id="layout">
+    <div id="scrim"></div>
+    <nav id="sidebar">
+      <div class="side-head">
+        <h2>Conversations</h2>
+        <button id="new-chat" title="New chat">＋ New</button>
+      </div>
+      <div id="conv-list"><div class="none">No conversations yet.</div></div>
+    </nav>
+    <div id="main" style="flex:1; display:flex; flex-direction:column; min-width:0;">
+      <div id="thread-wrap">
+    <div id="empty">
+      <div class="mark">c</div>
+      <h2>chatllm</h2>
+      <p>Local models, in your browser. Nothing leaves this machine.</p>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div id="thread" role="log" aria-live="polite"></div>
+  </div>
+  <button id="jump" title="Scroll to bottom">↓ latest</button>
+
+  <div id="composer-wrap">
+    <div id="composer">
+      <textarea id="user-input" rows="1"
+        placeholder="Message chatllm…"></textarea>
+      <button id="send-btn" disabled>Send</button>
+    </div>
+    <div id="hint">Enter to send · Shift+Enter for newline · runs entirely on this machine</div>
+  </div>
+
+      <noscript>chatllm needs JavaScript for the streaming chat UI.</noscript>
+  </div><!-- /main -->
+  </div><!-- /layout -->
+  <script>(function () {
+      'use strict';
+      var qs = function (s) { return document.querySelector(s); };
+      var threadWrap = qs('#thread-wrap');
+      var thread = qs('#thread');
+      var empty = qs('#empty');
+      var input = qs('#user-input');
+      var sendBtn = qs('#send-button') || qs('#send-btn');
+      var modelSelect = qs('#model-select');
+      var conn = qs('#conn');
+      var connLabel = qs('#conn-label');
+      var jump = qs('#jump');
+
+      // ── theme (persisted) ────────────────────────────────────────────
+      function setTheme(mode) {
+        document.body.classList.toggle('dark-mode', mode === 'dark');
+        localStorage.setItem('chatllm-theme', mode);
+        qs('#toggle-mode').textContent = mode === 'dark' ? '☀' : '☾';
+      }
+      setTheme(localStorage.getItem('chatllm-theme') ||
+        (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+      qs('#toggle-mode').addEventListener('click', function () {
+        setTheme(document.body.classList.contains('dark-mode') ? 'light' : 'dark');
+      });
+
+      // ── markdown-lite rendering ──────────────────────────────────────
+      function esc(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      // Inline spans; input is already block-escaped.
+      function inline(text) {
+        return text
+          .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+          .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
+          .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, '$1<em>$2</em>')
+          .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+          .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+            '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      }
+      // Syntax-tint fenced code: strings first (a "…" can contain // or
+      // keywords), then comments, keywords, numbers — lift-to-placeholder
+      // order so later rules can't match inside earlier spans.
+      function hi(code) {
+        var toks = [];
+        function keep(cls, m) {
+          toks.push('<span class="' + cls + '">' + m + '</span>');
+          return '\x1e' + '\x1f'.repeat(toks.length) + '\x1e';
+        }
+        code = code.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
+          function (m) { return keep('tok-str', m); });
+        code = code.replace(/(^|\s)((?:\/\/|#)[^\n]*)/g,
+          function (_, pre, com) { return pre + keep('tok-com', com); });
+        code = code.replace(/\b(func|return|if|else|for|while|import|package|class|def|const|let|var|type|struct|interface|switch|case|default|break|continue|go|defer|new|public|private|static|void|int|string|bool|float|true|false|nil|null|none|True|False|None)\b/g,
+          function (m) { return keep('tok-kw', m); });
+        code = code.replace(/\b(\d+(?:\.\d+)?)\b/g,
+          function (m) { return keep('tok-num', m); });
+        return code.replace(/\x1e([\x1f]+)\x1e/g,
+          function (_, marks) { return toks[marks.length - 1]; });
+      }
+      // render: escape → carve fenced blocks into placeholders (an unclosed
+      // fence mid-stream stays inert) → line loop → restore code HTML.
+      function render(text) {
+        var codes = [];
+        var html = esc(text).replace(/```(\w*)[ \t]*\n?([\s\S]*?)(```|$)/g,
+          function (_, lang, code) {
+            var body = code.replace(/\n$/, '');
+            codes.push(
+              '<div class="codeblock">' +
+              (lang ? '<span class="lang">' + lang + '</span>' : '') +
+              '<button class="copy" data-code="' + encodeURIComponent(body) + '">copy</button>' +
+              '<pre><code>' + hi(body) + '</code></pre></div>');
+            return '\x00' + (codes.length - 1) + '\x00';
+          });
+        var out = [];
+        var para = [], list = null;
+        function flushPara() {
+          if (para.length) { out.push('<p>' + para.join('<br>') + '</p>'); para = []; }
+        }
+        function flushList() {
+          if (list) { out.push('</' + list + '>'); list = null; }
+        }
+        html.split('\n').forEach(function (content) {
+          var ph = content.match(/^\x00(\d+)\x00$/);
+          if (ph) { flushPara(); flushList(); out.push(codes[+ph[1]]); return; }
+          if (/^\s*$/.test(content)) { flushPara(); flushList(); return; }
+          if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(content)) {
+            flushPara(); flushList(); out.push('<hr>'); return;
+          }
+          var q = content.match(/^\s*&gt;\s?(.*)$/);
+          if (q) {
+            flushPara(); flushList();
+            out.push('<blockquote>' + inline(q[1]) + '</blockquote>');
+            return;
+          }
+          var ul = content.match(/^\s*[-*+] (.*)$/);
+          var ol = content.match(/^\s*(\d+)[.)] (.*)$/);
+          if (ul || ol) {
+            var kind = ul ? 'ul' : 'ol';
+            // ul has one group (content); ol has two (number, content).
+            var itemText = ul ? ul[1] : ol[2];
+            if (list !== kind) { flushPara(); flushList(); out.push('<' + kind + '>'); list = kind; }
+            out.push('<li>' + inline(itemText) + '</li>');
+            return;
+          }
+          var h = content.match(/^(#{1,6})\s+(.*)$/);
+          if (h) {
+            flushPara(); flushList();
+            out.push('<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>');
+            return;
+          }
+          flushList();
+          para.push(inline(content));
+        });
+        flushPara(); flushList();
+        return out.join('').replace(/\x00(\d+)\x00/g, function (_, n) { return codes[+n]; });
+      }
+
+      // ── messages ─────────────────────────────────────────────────────
+      function nearBottom() {
+        return threadWrap.scrollHeight - threadWrap.scrollTop - threadWrap.clientHeight < 120;
+      }
+      function scrollDown(force) {
+        if (force || nearBottom()) threadWrap.scrollTop = threadWrap.scrollHeight;
+      }
+      threadWrap.addEventListener('scroll', function () {
+        jump.style.display = nearBottom() ? 'none' : 'block';
+      });
+      jump.addEventListener('click', function () { scrollDown(true); });
+
+      function hideEmpty() {
+        if (empty.parentNode) { empty.parentNode.removeChild(empty); }
+      }
+      // addMessage(kind, text) → element. Kinds: user, assistant, note, error, divider.
+      function addMessage(kind, text, who) {
+        hideEmpty();
+        var el = document.createElement('div');
+        el.className = 'msg ' + kind;
+        if (kind === 'divider') {
+          el.textContent = text;
+        } else if (kind === 'user') {
+          var c = document.createElement('div');
+          c.className = 'content';
+          c.textContent = text;
+          el.appendChild(c);
+        } else if (kind === 'assistant') {
+          var w = document.createElement('div');
+          w.className = 'who';
+          w.textContent = who || 'assistant';
+          var c2 = document.createElement('div');
+          c2.className = 'content';
+          c2.innerHTML = render(text);
+          el.appendChild(w); el.appendChild(c2);
+          el.dataset.raw = text;
+        } else {
+          var c3 = document.createElement('div');
+          c3.className = 'content';
+          c3.textContent = text;
+          el.appendChild(c3);
+        }
+        thread.appendChild(el);
+        scrollDown(kind === 'user');
+        return el;
+      }
+      function setAssistant(el, raw) {
+        el.dataset.raw = raw;
+        el.querySelector('.content').innerHTML = render(raw);
+        scrollDown(false);
+      }
+      // First real token arrived: replace the thinking dots with streamed
+      // content (the streaming cursor takes over from CSS).
+      function firstToken(el, raw) {
+        el.classList.add('has-text');
+        var st = el.querySelector('.status');
+        if (st) st.remove();
+        setAssistant(el, raw);
+      }
+      // Copy + retry + raw actions on a finished assistant message.
+      function addActions(el, raw, onRetry) {
+        var bar = document.createElement('div');
+        bar.className = 'actions';
+        var cp = document.createElement('button');
+        cp.textContent = 'copy';
+        cp.addEventListener('click', function () {
+          copyText(raw, cp);
+        });
+        bar.appendChild(cp);
+        var rw = document.createElement('button');
+        rw.textContent = 'raw';
+        rw.title = 'Show the raw markdown (for debugging rendering)';
+        rw.addEventListener('click', function () {
+          var content = el.querySelector('.content');
+          var showing = content.dataset.showRaw === '1';
+          content.dataset.showRaw = showing ? '0' : '1';
+          rw.textContent = showing ? 'raw' : 'rendered';
+          if (showing) {
+            content.innerHTML = render(raw);
+          } else {
+            content.innerHTML = '<pre class="rawmd"></pre>';
+            content.querySelector('.rawmd').textContent = raw;
+          }
+        });
+        bar.appendChild(rw);
+        if (onRetry) {
+          var rt = document.createElement('button');
+          rt.textContent = 'retry';
+          rt.addEventListener('click', onRetry);
+          bar.appendChild(rt);
+        }
+        el.appendChild(bar);
+      }
+      function copyText(text, btn) {
+        function done() {
+          if (!btn) return;
+          var old = btn.textContent;
+          btn.textContent = 'copied ✓';
+          setTimeout(function () { btn.textContent = old; }, 1200);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () {});
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta);
+          ta.select(); document.execCommand('copy');
+          document.body.removeChild(ta); done();
+        }
+      }
+      // Delegated handler for per-codeblock copy buttons.
+      thread.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.copy[data-code]');
+        if (!btn) return;
+        copyText(decodeURIComponent(btn.getAttribute('data-code')), btn);
+      });
+
+      // Status line: shown the moment a turn starts ("working", "loading
+      // model X…"), replaced by dots on "generating", cleared on first token.
+      function showStatus(text) {
+        hideEmpty();
+        if (!streaming) startStreaming();
+        var st = streaming.querySelector('.status');
+        if (!st) {
+          st = document.createElement('div');
+          st.className = 'status';
+          streaming.querySelector('.content').innerHTML = '';
+          streaming.querySelector('.content').appendChild(st);
+        }
+        var dots = '<span class="thinking"><i></i><i></i><i></i></span>';
+        st.innerHTML = text + ' ' + dots;
+        scrollDown(false);
+      }
+
+      // Tool chips: one per call, in-place "…" → ✓/✗. Click a finished
+      // chip to expand its arguments + result. A repeat of the same tool
+      // (decline-retry loops) folds into the last chip with a ×N.
+      var lastChip = null, lastChipName = "", lastChipCount = 0, lastChipData = null, lastChipArgs = null;
+      function addToolChip(name, args) {
+        hideEmpty();
+        lastChipArgs = args || null;
+        if (lastChip && lastChipName === name && lastChip.parentNode) {
+          lastChipCount++;
+          lastChip.querySelector('.content').innerHTML = '⚙ ' + name + ' ×' + lastChipCount + ' …';
+          scrollDown(false);
+          return;
+        }
+        var el = addMessage('toolchip', '');
+        el.querySelector('.content').innerHTML = '⚙ ' + name + ' …';
+        el.querySelector('.content').style.cursor = 'pointer';
+        el.addEventListener('click', function () { toggleChipDetail(el); });
+        lastChip = el; lastChipName = name; lastChipCount = 1; lastChipData = null;
+        scrollDown(false);
+      }
+      function finishToolChip(name, ok, args, result) {
+        if (!lastChip || lastChipName !== name) { addToolChip(name); }
+        var mark = ok ? '<span class="ok">✓</span>' : '<span class="fail">✗</span>';
+        var n = lastChipCount > 1 ? ' ×' + lastChipCount : '';
+        var label = '⚙ ' + name + n + ' ' + mark;
+        // Written HTML files get an open-in-new-tab preview link.
+        var path = args && args.path ? String(args.path) : '';
+        if (ok && path && /\.html?$/i.test(path)) {
+          label += ' · <a href="/preview/' + encodeURIComponent(path) +
+            '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">preview</a>';
+        }
+        lastChip.querySelector('.content').innerHTML = label;
+        var finalArgs = args || lastChipArgs;
+        lastChipData = { args: finalArgs, result: result, name: name, ok: ok };
+        lastChip.dataset.detail = JSON.stringify({ args: finalArgs, result: result });
+        lastChip = null; lastChipName = ""; lastChipCount = 0; lastChipArgs = null;
+        scrollDown(false);
+      }
+      function toggleChipDetail(el) {
+        var existing = el.querySelector('.chip-detail');
+        if (existing) { existing.remove(); return; }
+        // Only finished chips with data can expand; the click handler is
+        // attached to all chips, so guard.
+        if (!el.dataset.detail) return;
+        var d = JSON.parse(el.dataset.detail);
+        var panel = document.createElement('div');
+        panel.className = 'chip-detail';
+        var html = '';
+        if (d.args && Object.keys(d.args).length) {
+          html += '<div class="chip-h">arguments</div><pre class="rawmd">' +
+            esc(JSON.stringify(d.args, null, 2)) + '</pre>';
+        }
+        if (d.result) {
+          html += '<div class="chip-h">result</div><pre class="rawmd">' + esc(d.result) + '</pre>';
+        }
+        panel.innerHTML = html;
+        el.appendChild(panel);
+        scrollDown(false);
+      }
+
+      // Metrics: llama.cpp-style one-liner attached to the last reply.
+      function showMetrics(mt) {
+        if (!mt) return;
+        var bits = [];
+        if (mt.pp > 0) bits.push('pp ' + mt.pp.toFixed(1) + ' t/s');
+        bits.push(mt.gen_tokens + ' tok');
+        bits.push(mt.tps.toFixed(1) + ' t/s');
+        bits.push('ctx ' + mt.context_used + '/' + mt.context_size);
+        var el = document.createElement('div');
+        el.className = 'metrics';
+        el.textContent = bits.join(' · ');
+        thread.appendChild(el);
+        scrollDown(false);
+      }
+
+      // ── tools toggle ─────────────────────────────────────────────────
+      var toolsOn = localStorage.getItem('chatllm-tools') === 'on';
+      var toolsBtn = qs('#tools-toggle');
+      function renderToolsBtn() {
+        toolsBtn.style.background = toolsOn ? 'var(--accent)' : '';
+        toolsBtn.style.color = toolsOn ? '#fff' : '';
+        toolsBtn.title = toolsOn
+          ? 'Tools on — file tools + skills agentically (run_command is REPL-only). Click to turn off.'
+          : 'Tools off. Click to enable file tools + skills.';
+      }
+      renderToolsBtn();
+      toolsBtn.addEventListener('click', function () {
+        toolsOn = !toolsOn;
+        localStorage.setItem('chatllm-tools', toolsOn ? 'on' : 'off');
+        renderToolsBtn();
+        addMessage('note', toolsOn
+          ? 'Tools on — the model can read/write files and use your skills.'
+          : 'Tools off.');
+      });
+
+      // ── conversations sidebar ────────────────────────────────────────
+      var currentConv = localStorage.getItem('chatllm-conv') || null;
+      var convList = qs('#conv-list');
+      var sidebar = qs('#sidebar');
+      var scrim = qs('#scrim');
+
+      function relTime(unix) {
+        if (!unix) return '';
+        var d = Date.now() / 1000 - unix;
+        if (d < 90) return 'now';
+        if (d < 3600) return Math.round(d / 60) + 'm';
+        if (d < 86400) return Math.round(d / 3600) + 'h';
+        return Math.round(d / 86400) + 'd';
+      }
+      function renderConvList(convs) {
+        convList.innerHTML = '';
+        if (!convs || !convs.length) {
+          convList.innerHTML = '<div class="none">No conversations yet.</div>';
+          return;
+        }
+        convs.forEach(function (cv) {
+          var el = document.createElement('div');
+          el.className = 'conv' + (cv.id === currentConv ? ' active' : '');
+          var t = document.createElement('span');
+          t.className = 't'; t.textContent = cv.title || 'Untitled';
+          var w = document.createElement('span');
+          w.className = 'when'; w.textContent = relTime(cv.updated_at);
+          var del = document.createElement('button');
+          del.className = 'del'; del.textContent = '✕'; del.title = 'Delete';
+          del.addEventListener('click', function (e) {
+            e.stopPropagation();
+            sendCtl({ delete: cv.id });
+            if (cv.id === currentConv) newChat(false);
+          });
+          el.appendChild(t); el.appendChild(w); el.appendChild(del);
+          el.addEventListener('click', function () { loadConv(cv.id); });
+          convList.appendChild(el);
+        });
+      }
+      function refreshConvs() { sendCtl({ list: true }); }
+      function sendCtl(obj) {
+        if (socket && socket.readyState === 1) socket.send(JSON.stringify(obj));
+      }
+      function loadConv(id) {
+        if (busy) return;
+        if (id === currentConv) { closeSidebar(); return; }
+        closeSidebar();
+        addMessage('note', 'Loading conversation…');
+        sendCtl({ load: id });
+      }
+      function newChat(announce) {
+        if (busy) return;
+        thread.innerHTML = '';
+        currentConv = null;
+        localStorage.removeItem('chatllm-conv');
+        showEmpty();
+        sendCtl({ new_chat: true });
+        if (announce !== false) addMessage('note', 'New conversation started.');
+        closeSidebar();
+        refreshConvs();
+        input.focus();
+      }
+      function showEmpty() {
+        var e = qs('#empty');
+        if (!e) {
+          // re-insert the empty state before the thread
+          e = document.createElement('div');
+          e.id = 'empty';
+          e.innerHTML = '<div class="mark">c</div><h2>chatllm</h2>' +
+            '<p>Local models, in your browser. Nothing leaves this machine.</p>' +
+            '<div class="chips" id="chips"></div>';
+          thread.parentNode.insertBefore(e, thread);
+          addChips();
+        }
+      }
+      function closeSidebar() {
+        sidebar.classList.remove('open');
+        scrim.classList.remove('show');
+      }
+      qs('#sidebar-toggle').addEventListener('click', function () {
+        sidebar.classList.toggle('open');
+        scrim.classList.toggle('show', sidebar.classList.contains('open'));
+      });
+      scrim.addEventListener('click', closeSidebar);
+
+      // Transcript frame: rebuild the thread from a loaded conversation.
+      // Removes any transient "Loading…" note: the transcript replaces it.
+      function renderTranscript(msgs) {
+        thread.innerHTML = '';
+        hideEmpty();
+        (msgs || []).forEach(function (m) {
+          if (m.role === 'user') addMessage('user', m.content);
+          else if (m.role === 'tool') {
+            addMessage('toolchip', '⚙ tool call (see transcript)');
+          } else if (m.role === 'assistant') {
+            var el = addMessage('assistant', m.content);
+            addActions(el, m.content, function () { resend(lastPrompt); });
+          }
+        });
+        scrollDown(true);
+      }
+
+      // ── websocket ────────────────────────────────────────────────────
+      var socket = null;
+      var streaming = null;   // assistant element for the in-flight reply
+      var acc = "";           // raw accumulated text
+      var sentModel = "";     // model used for the in-flight reply
+      var lastPrompt = "";    // last user prompt (for retry)
+      var busy = false;       // a reply is in flight
+
+      function setConn(state, label) {
+        conn.className = state;
+        connLabel.textContent = label;
+        if (!busy) sendBtn.disabled = state !== 'on';
+      }
+
+      function connect() {
+        setConn('off', 'connecting');
+        socket = new WebSocket(
+          (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/ws');
+        socket.onopen = function () {
+          setConn('on', 'connected');
+          // Reconnect (Stop, refresh): restore server-side history for the
+          // conversation the browser is still showing, so the next message
+          // keeps its context.
+          if (currentConv) sendCtl({ resume: currentConv });
+          refreshConvs();
+        };
+        socket.onclose = function () {
+          setConn('off', 'reconnecting…');
+          setTimeout(connect, 1500);
+        };
+        socket.onerror = function () { socket.close(); };
+        socket.onmessage = function (ev) {
+          if (ev.data === '{"done":true}') {
+            finishStreaming();
+            refreshConvs();
+            return;
+          }
+          // All non-delta frames are JSON objects. Dispatch on parsed keys
+          // (never on string prefixes — Go's marshaled key order varies).
+          if (ev.data.charAt(0) === '{') {
+            var ctl = null;
+            try { ctl = JSON.parse(ev.data); } catch (e) {}
+            if (ctl && typeof ctl === 'object') {
+              if (ctl.error !== undefined) {
+                failStreaming();
+                addMessage('error', String(ctl.error));
+                return;
+              }
+              if (ctl.note !== undefined) {
+                addMessage('note', String(ctl.note));
+                return;
+              }
+              if (ctl.status !== undefined) {
+                showStatus(String(ctl.status));
+                return;
+              }
+              if (ctl.metrics !== undefined) {
+                showMetrics(ctl.metrics);
+                return;
+              }
+              if (ctl.iter !== undefined) {
+                // New assistant message begins (tool-turn iteration):
+                // close the current bubble (with actions) but stay in
+                // busy mode — the next delta/chip opens a fresh bubble.
+                finishStreaming();
+                busy = true;
+                sendBtn.textContent = 'Stop';
+                sendBtn.classList.add('stop');
+                sendBtn.disabled = false;
+                return;
+              }
+              if (ctl.tool !== undefined) {
+                addToolChip(String(ctl.tool), ctl.arguments);
+                return;
+              }
+              if (ctl.tool_done !== undefined) {
+                finishToolChip(String(ctl.tool_done), !!ctl.ok, ctl.args, ctl.result);
+                return;
+              }
+              if (ctl.conv !== undefined) {
+                currentConv = ctl.conv;
+                localStorage.setItem('chatllm-conv', ctl.conv);
+              }
+              if (ctl.conversations !== undefined) {
+                renderConvList(ctl.conversations || []);
+              }
+              if (ctl.transcript !== undefined) {
+                renderTranscript(ctl.transcript);
+                if (ctl.model && modelSelect) {
+                  for (var i = 0; i < modelSelect.options.length; i++) {
+                    if (modelSelect.options[i].value === ctl.model) { modelSelect.value = ctl.model; break; }
+                  }
+                }
+              }
+              if (ctl.deleted !== undefined) {
+                addMessage('note', 'Conversation deleted.');
+              }
+              if (ctl.conv !== undefined || ctl.conversations !== undefined ||
+                  ctl.transcript !== undefined || ctl.deleted !== undefined) {
+                return; // recognized control frame: handled
+              }
+              // JSON but not a control frame we know — log and ignore so a
+              // protocol mismatch never paints garbage into the thread.
+              console.log('chatllm: ignored frame', ev.data.slice(0, 120));
+              return;
+            }
+          }
+          if (!streaming) startStreaming();
+          acc += ev.data;
+          if (acc === ev.data) firstToken(streaming, acc); // first token: drop the dots
+          else setAssistant(streaming, acc);
+        };
+      }
+      function startStreaming() {
+        busy = true;
+        qs('#composer').classList.add('busy');
+        streaming = addMessage('assistant', '', shortModel(sentModel));
+        streaming.classList.add('streaming');
+        // Thinking state: animated dots until the first real token lands.
+        var dots = document.createElement('span');
+        dots.className = 'thinking';
+        dots.innerHTML = '<i></i><i></i><i></i>';
+        streaming.querySelector('.content').innerHTML = '';
+        streaming.querySelector('.content').appendChild(dots);
+        acc = "";
+        sendBtn.textContent = 'Stop';
+        sendBtn.classList.add('stop');
+        sendBtn.disabled = false;
+      }
+      function finishStreaming() {
+        if (!streaming) { busy = false; updateSend(); return; }
+        qs('#composer').classList.remove('busy');
+        streaming.classList.remove('streaming');
+        var raw = acc;
+        var el = streaming;
+        addActions(el, raw, function () { resend(lastPrompt); });
+        streaming = null; acc = ""; busy = false;
+        updateSend();
+        scrollDown(false);
+      }
+      function failStreaming() {
+        qs('#composer').classList.remove('busy');
+        if (streaming) {
+          streaming.classList.remove('streaming');
+          if (!acc) { // never produced text: drop the placeholder
+            streaming.parentNode.removeChild(streaming);
+          }
+        }
+        streaming = null; acc = ""; busy = false;
+        updateSend();
+      }
+      function updateSend() {
+        sendBtn.textContent = 'Send';
+        sendBtn.classList.remove('stop');
+        sendBtn.disabled = socket === null || socket.readyState !== 1;
+      }
+
+      function shortModel(name) {
+        return (name || '').replace(/-4bit$|-5bit$|-8bit$|-mlx|-q[0-9]+/g, '').replace(/(^|[-_])(qwen[0-9.]*|gemma)[-_]*/i, '$1');
+      }
+
+      function send(text) {
+        var value = (text !== undefined ? text : input.value).trim();
+        if (!value) return;
+        if (!socket || socket.readyState !== 1) {
+          addMessage('note', 'Not connected yet — try again in a moment.');
+          return;
+        }
+        if (busy) return; // Stop button handles in-flight replies
+        hideEmpty();
+        lastPrompt = value;
+        sentModel = modelSelect.value;
+        addMessage('user', value);
+        socket.send(JSON.stringify({ model: modelSelect.value, prompt: value, tools: toolsOn }));
+        if (text === undefined) { input.value = ""; autoGrow(); }
+        input.focus();
+      }
+      function resend(prompt) {
+        if (prompt) send(prompt);
+      }
+      function stop() {
+        if (socket && socket.readyState === 1) socket.close();
+        // onclose reconnects with fresh server state; mark the seam.
+        if (streaming) {
+          streaming.classList.remove('streaming');
+          if (acc) setAssistant(streaming, acc + "\n\n…");
+          streaming = null; acc = "";
+        }
+        busy = false;
+        qs('#composer').classList.remove('busy');
+        addMessage('divider', 'stopped — the model starts fresh; history above is for reference');
+        updateSend();
+      }
+
+      sendBtn.addEventListener('click', function () { busy ? stop() : send(); });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+      });
+      function autoGrow() {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + 'px';
+      }
+      input.addEventListener('input', autoGrow);
+      qs('#new-chat').addEventListener('click', function () { newChat(false); });
+
+      // ── suggestion chips (empty state) ───────────────────────────────
+      function addChips() {
+        var holder = qs('#chips');
+        if (!holder) return;
+        holder.innerHTML = '';
+        ['Explain DNS like I am five',
+         'Brainstorm three weekend projects',
+         'Write a haiku about rain'].forEach(function (prompt) {
+          var b = document.createElement('button');
+          b.textContent = prompt;
+          b.addEventListener('click', function () { send(prompt); });
+          holder.appendChild(b);
+        });
+      }
+      addChips();
+
+      // ── models ───────────────────────────────────────────────────────
+      var savedModel = localStorage.getItem('chatllm-model');
+      fetch('/models').then(function (r) { return r.json(); }).then(function (data) {
+        var models = data.models || [];
+        models.forEach(function (name) {
+          var opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          modelSelect.appendChild(opt);
+        });
+        if (!models.length && data.default) {
+          var opt = document.createElement('option');
+          opt.value = "";
+          opt.textContent = data.default + ' (default)';
+          modelSelect.appendChild(opt);
+        }
+        var want = savedModel || data.default;
+        if (want) {
+          for (var i = 0; i < modelSelect.options.length; i++) {
+            if (modelSelect.options[i].value === want) { modelSelect.value = want; break; }
+          }
+        }
+        modelSelect.addEventListener('change', function () {
+          localStorage.setItem('chatllm-model', modelSelect.value);
+          addMessage('note', 'Model set to ' + (modelSelect.value || data.default) + ' — applies from your next message.');
+        });
+      });
+
+      connect();
+      input.focus();
+      autoGrow();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+Initial extraction: sinter shared local-LLM engine module
+
+Extract the local inference engine (tensor, mlx, llm packages) from
+sprout (pkg/gomlx + pkg/tensor nested modules) and auto-term's fork into
+the standalone sprout-foundry/sinter module,
+merging auto-term's fork-only additions:
+
+- qwen2 architecture (Qwen2.5-Coder support, incl. QKV bias path in
+  Linear that qwen3 dropped)
+- SINTER_BACKEND env override for backend selection in tensor/detect
+- GGML portability: bionic/Termux aligned-alloc fallback, CPU-backend
+  registration fallback, GOMLX_GGML_CPU device override
+
+Layout changes from sprout's tree:
+- single module (no nested go.mod/replace dance for tensor/ggml)
+- model catalog moved to llm/catalog subpackage (apps may keep their
+  own catalog; engine no longer ships a hardcoded list)
+- new llm/all blank-import package registering every architecture and
+  the MLX backend
+
+Env vars renamed SPROUT_*/AUTOTERM_* -> SINTER_*.
+
+Name: sintering fuses metal powder into a dense solid part under heat -
+quantized 4-bit weights fused into a running model, on Metal.
+
+Consumed by sprout and auto-term via a local replace directive until
+the repo is pushed and tagged.
