@@ -28,7 +28,7 @@ import (
 // Session defaults.
 const (
 	historyLimit = 200             // hard cap on retained messages (100 turns)
-	logDirName   = ".cmd_chat_llm" // session log dir (bash tool heritage)
+	logDirName   = ".sprout_local_sessions" // session log dir (bash tool heritage)
 )
 
 // currentGen tracks the in-flight generation so Ctrl-C can cancel it.
@@ -361,7 +361,7 @@ func (s *replState) rebuildAgent(carry bool) {
 		SystemPrompt:   s.systemPrompt,
 		MaxIterations:  maxToolSteps,
 		EventPublisher: &replEvents{},
-		Debug:          os.Getenv("CHATLLM_SEED_DEBUG") != "",
+		Debug:          os.Getenv("SPROUT_LOCAL_SEED_DEBUG") != "",
 		// In-process sinter has no transient network errors; a failure is
 		// real (OOM, context overflow). Retry just stalls the UI.
 		RetryConfig: core.RetryConfig{MaxAttempts: 1},

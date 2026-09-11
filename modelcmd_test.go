@@ -34,7 +34,7 @@ func resetModelCache() {
 
 func TestModelFromRef(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("CHATLLM_MODELS_ROOT", root)
+	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root)
 	makeFakeModelDir(t, root, "alpha-1b")
 
 	// Bare name under the models root.
@@ -70,7 +70,7 @@ func TestModelFromRef(t *testing.T) {
 
 func TestAvailableModelNames(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("CHATLLM_MODELS_ROOT", root)
+	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root)
 	// Pin the process default inside the root so the expected list is
 	// machine-independent (the real default dir may or may not exist).
 	alpha := makeFakeModelDir(t, root, "alpha-1b")
@@ -123,7 +123,7 @@ func TestEvictModels(t *testing.T) {
 // show and failed lookups must never switch the session model or exit.
 func TestDispatchModelCommands(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("CHATLLM_MODELS_ROOT", root)
+	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root)
 	resetModelCache()
 	defer resetModelCache()
 

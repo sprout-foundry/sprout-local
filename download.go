@@ -27,9 +27,9 @@ import (
 )
 
 // modelsRoot is the shared on-device models directory (same root gmitllm,
-// sprout, and auto-term use). CHATLLM_MODELS_ROOT overrides it.
+// sprout, and auto-term use). SPROUT_LOCAL_MODELS_ROOT overrides it.
 func modelsRoot() string {
-	if root := os.Getenv("CHATLLM_MODELS_ROOT"); root != "" {
+	if root := os.Getenv("SPROUT_LOCAL_MODELS_ROOT"); root != "" {
 		return root
 	}
 	return filepath.Join(homeDir(), "dev", "llm-models")

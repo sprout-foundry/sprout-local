@@ -46,9 +46,9 @@ var (
 // residentLimit is how many models may stay resident in the load cache.
 // Two keeps instant swaps between a pair; each additional resident model
 // pins its weights for the model's lifetime. Override with
-// CHATLLM_RESIDENT_MODELS (1 = always reload on switch).
+// SPROUT_LOCAL_RESIDENT_MODELS (1 = always reload on switch).
 func residentLimit() int {
-	if v := os.Getenv("CHATLLM_RESIDENT_MODELS"); v != "" {
+	if v := os.Getenv("SPROUT_LOCAL_RESIDENT_MODELS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			return n
 		}
@@ -463,7 +463,7 @@ func runGeneration(
 
 	guardText := guard.text()
 	text = hygieneAll(guardText)
-	if os.Getenv("CHATLLM_RAW") == "1" {
+	if os.Getenv("SPROUT_LOCAL_RAW") == "1" {
 		if text == "" && genTokens > 0 {
 			// Everything was eaten post-generation: dump the unhygiened
 			// stream so it's visible what the model actually produced
@@ -534,7 +534,7 @@ func dumpRawFull(modelDir, text, note string) {
 }
 
 // dumpRaw appends one generation's raw (hygiene-passed) text to a
-// timestamped file under ~/.cmd_chat_llm/raw/. Best effort: debugging
+// timestamped file under ~/.sprout_local_sessions/raw/. Best effort: debugging
 // output must never break the chat.
 func dumpRaw(modelDir, text string) {
 	dir := filepath.Join(homeDir(), logDirName, "raw")

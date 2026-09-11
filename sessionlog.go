@@ -2,7 +2,7 @@ package main
 
 // ---------------------------------------------------------------------------
 // Session logging — preserves the bash tool's behavior of writing every
-// exchange to ~/.cmd_chat_llm/<timestamp>.log.
+// exchange to ~/.sprout_local_sessions/<timestamp>.log.
 // ---------------------------------------------------------------------------
 
 import (
@@ -18,7 +18,7 @@ var (
 	logPath    string
 )
 
-// defaultLogPath returns ~/.cmd_chat_llm/<YYYYMMDDHHMMSS>.log, creating the
+// defaultLogPath returns ~/.sprout_local_sessions/<YYYYMMDDHHMMSS>.log, creating the
 // directory when needed (same location the bash tool used).
 func defaultLogPath() string {
 	dir := filepath.Join(homeDir(), logDirName)

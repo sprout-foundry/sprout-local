@@ -43,7 +43,7 @@ structured tools.
 | `chatmodel_linux_ggml.go` | Per-platform sinter arch registration — Linux/GGML (qwen2 + qwen35 only) |
 | `backend.go` | Startup model probe (fails fast when no model dir resolves) |
 | `signalwatch.go` | Ctrl-C: first signal cancels the in-flight generation, second exits |
-| `sessionlog.go` | Session logs to `~/.cmd_chat_llm/<timestamp>.log` |
+| `sessionlog.go` | Session logs to `~/.sprout_local_sessions/<timestamp>.log` |
 | `download.go` | `-pull`: HF download via `hf` CLI, sinter catalog metadata, RAM gate |
 | `urlfetch.go` | Web `#url` enrichment: fetch + readable-text extraction for prompts |
 | `factcheck.go` | Post-answer Yes/No self-check using the loaded model (web UI) |
@@ -62,11 +62,9 @@ through the seed agent loop like built-ins.
 Executor: toolExecutor|NoopExecutor, UI: termUI, MaxIterations: 4}`.
 `/model`, `/pull`, `/system`, `/tools` rebuild the agent with
 `ExportState`/`ImportState` carrying the conversation across. Tools off →
-`NoopExecutor`, so the model never sees the tool protocol. `CHATLLM_SEED_DEBUG=1`
+`NoopExecutor`, so the model never sees the tool protocol. `SPROUT_LOCAL_SEED_DEBUG=1`
 enables seed's loop trace. go.mod `replace`s seed to the sibling checkout
-`~/dev/sprout-foundry/seed`.
-
-### Seed wiring
+`~/dev/sprout-foundry/seed` (sibling checkout).
 
 ## Running
 
@@ -100,8 +98,8 @@ Ctrl-C cancels the current response and keeps the session; press twice quickly t
 
 ## Web UI (`-serve`)
 
-- Embedded via `go:embed all:ui`; `UI_CHATLLM_DEV=1 sprout-local -serve` serves `ui/` from disk for live editing.
-- WebSocket chat runs the same seed agent as the REPL: per-connection agent, tools/skills via the ⚙ toggle (run_command auto-declines on web), tool chips, stop/retry, conversation sidebar with resume.
+- Embedded via `go:embed all:ui`; `UI_SPROUT_LOCAL_DEV=1 sprout-local -serve` serves `ui/` from disk for live editing.
+- WebSocket chat runs the same seed agent as the REPL: per-connection agent, tools/skills via the ⚙ toggle (run_command auto-declines on web), tool chips (click to expand args+result, HTML preview links), per-iteration bubbles, stop/retry, conversation sidebar with resume.
 - OpenAI-compatible API on the same port: `POST /v1/chat/completions` (SSE streaming, native `tool_calls` via sinter's openaisserver), `GET /v1/models` (all installed models; the request's `model` field selects any of them), `GET /health`.
 - `#url` enrichment: `#https://…` in a prompt fetches the page (2 MiB / 8k-char caps, code-block URLs ignored) and appends its readable text to the turn; fetch failures arrive as `{"note":...}` frames.
 - Fact self-check: after each web turn the same model re-reads the turn as a reference and answers Yes/No at temperature 0; a confident "No" emits a warning note frame (`factcheck.go`).
@@ -112,7 +110,7 @@ Ctrl-C cancels the current response and keeps the session; press twice quickly t
 ## Model Resolution Order
 
 `resolveModelDir()` checks in this order:
-1. `LOCAL_MODEL_DIR` environment variable (or `-m` flag)
+1. `SPROUT_LOCAL_MODEL_DIR` environment variable (or `-m` flag)
 2. `~/dev/llm-models/qwen3.5-4b-sprout-tuned-mlx-q5` (shared models root)
 
 ## Key Constants
@@ -152,5 +150,5 @@ https://github.com/sprout-foundry/sinter/issues/1.
 - **In-process streaming** — sinter's `Generate` takes an onToken callback; each token is decoded and streamed through a filter that suppresses `<tool_call>` markup, while the parsed clean text enters seed state and logs.
 - **Full re-render per turn** — the entire message list goes through `FormatChat` each turn; sinter's prefix caching makes repeat prefixes cheap.
 - **Tools default off** — chat first, tools when asked. A 4B model spends tokens and attention on the protocol; `/tools on` opts in per session. Off means `NoopExecutor`, so the model never sees the tool prompt.
-- **Session logs** — every exchange appends to `~/.cmd_chat_llm/` (the old bash tool's location), so scrollback survives terminal loss.
+- **Session logs** — every exchange appends to `~/.sprout_local_sessions/`, so scrollback survives terminal loss.
 - **Download stays app-level** — sinter's README keeps the catalog separate from the engine "so apps can keep their own list"; the engine has no download API. The `hf` CLI mechanics (pipe draining, disk-based progress polling) are ported from sprout's `localmodel.EnsureModel`.

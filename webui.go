@@ -6,7 +6,7 @@ package main
 // `chatllm -serve` hosts the UI (static assets embedded at build time via
 // go:embed) plus a WebSocket API (/ws), model listing (/models), and the
 // OpenAI-compatible /v1 endpoint (apiserver.go) over in-process sinter
-// inference. UI_CHATLLM_DEV=1 serves assets from disk (chatllm/ui/)
+// inference. UI_SPROUT_LOCAL_DEV=1 serves assets from disk (chatllm/ui/)
 // instead, so the UI can be edited without a rebuild.
 //
 // Each WebSocket connection owns a seed agent (tools + skills enabled via
@@ -668,15 +668,15 @@ func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // uiRoot returns the embedded UI tree, or the on-disk tree when
-// UI_CHATLLM_DEV=1 (edit the UI without rebuilding).
+// UI_SPROUT_LOCAL_DEV=1 (edit the UI without rebuilding).
 func uiRoot() fs.FS {
-	if os.Getenv("UI_CHATLLM_DEV") == "1" {
+	if os.Getenv("UI_SPROUT_LOCAL_DEV") == "1" {
 		if st, err := os.Stat("ui"); err == nil && st.IsDir() {
 			if sub, err := fs.Sub(os.DirFS("."), "ui"); err == nil {
 				return sub
 			}
 		}
-		log.Println("UI_CHATLLM_DEV=1 but ./ui not found; using embedded UI")
+		log.Println("UI_SPROUT_LOCAL_DEV=1 but ./ui not found; using embedded UI")
 	}
 	sub, err := fs.Sub(uiFS, "ui")
 	if err != nil {
