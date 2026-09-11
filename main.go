@@ -27,7 +27,7 @@ import (
 
 // Session defaults.
 const (
-	historyLimit = 200             // hard cap on retained messages (100 turns)
+	historyLimit = 200                      // hard cap on retained messages (100 turns)
 	logDirName   = ".sprout_local_sessions" // session log dir (bash tool heritage)
 )
 
