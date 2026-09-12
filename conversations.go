@@ -3,11 +3,13 @@ package main
 // ---------------------------------------------------------------------------
 // conversations.go — server-side conversation persistence for the web UI.
 //
-// Each conversation is a JSON file in ~/.chatllm/conversations/: id,
-// title (first user message), model, and the message list. The web UI's
-// sidebar lists them; loading one restores the per-connection history so
-// the chat continues with full context. Writes happen after each completed
-// turn; the store is tiny and local, matching chatllm's local-only stance.
+// Each conversation is a JSON file in <stateRoot>/conversations (default
+// ~/.sprout-local/conversations; SPROUT_LOCAL_STATE_ROOT moves the root):
+// id, title (first user message), model, and the message list. The web
+// UI's sidebar lists them; loading one restores the per-connection
+// history so the chat continues with full context. Writes happen after
+// each completed turn; the store is tiny and local, matching sprout-local's
+// local-only stance.
 // ---------------------------------------------------------------------------
 
 import (
@@ -48,13 +50,23 @@ func toStored(msgs []llm.ChatMessage) []storedMsg {
 	return out
 }
 
-// conversationsDir is ~/.chatllm/conversations.
+// conversationsDir is <stateRoot>/conversations (default
+// ~/.sprout-local/conversations). Legacy compat: when the new directory
+// does not exist but the pre-migration ~/.chatllm/conversations does,
+// the legacy directory keeps serving reads and writes (no copying).
 func conversationsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	state := stateRoot()
+	if state == "" {
 		return ""
 	}
-	return filepath.Join(home, ".chatllm", "conversations")
+	newDir := filepath.Join(state, "conversations")
+	if dirExists(newDir) {
+		return newDir
+	}
+	if legacy := filepath.Join(homeDir(), ".chatllm", "conversations"); dirExists(legacy) {
+		return legacy
+	}
+	return newDir
 }
 
 // newConversationID is a timestamp-based, collision-safe-enough id.

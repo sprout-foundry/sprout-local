@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm"
+	"github.com/sprout-foundry/sinter/llm/catalog"
 )
 
 // Per-platform model registrations (sinter blank-imports) live in
@@ -56,15 +57,6 @@ func residentLimit() int {
 	return 2
 }
 
-// defaultModelDir is the MLX-format model directory used when nothing else
-// is configured. It points at the shared models root that gmitllm and
-// sprout also use, so the same weights serve every tool.
-//
-// Qwen3.5-4B at q5: below ~5-bit the 4B tier loses too much to follow
-// tool-call format and multi-step instructions reliably; the q5 tuned
-// export is the smallest quant that stays cogent at this size.
-var defaultModelDir = filepath.Join(homeDir(), "dev", "llm-models", "qwen3.5-4b-sprout-tuned-mlx-q5")
-
 func homeDir() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -73,24 +65,121 @@ func homeDir() string {
 	return h
 }
 
-// resolveModelDir returns the MLX-format model directory for sinter, or ""
-// if none can be found.
+// stateRoot is sprout-local's per-user state directory:
+// SPROUT_LOCAL_STATE_ROOT, or ~/.sprout-local when unset. All other state
+// locations derive from it unless they have their own override:
+// conversations → <stateRoot>/conversations (legacy ~/.chatllm compat),
+// skills → <stateRoot>/skills (SPROUT_LOCAL_SKILLS_DIR override, legacy
+// ~/.chatllm compat), session logs + raw dumps → <stateRoot>/sessions,
+// models → <stateRoot>/models (SPROUT_LOCAL_MODELS_ROOT override, see
+// modelsRoot in download.go).
+func stateRoot() string {
+	if root := os.Getenv("SPROUT_LOCAL_STATE_ROOT"); root != "" {
+		return root
+	}
+	h := homeDir()
+	if h == "" {
+		return ""
+	}
+	return filepath.Join(h, ".sprout-local")
+}
+
+// sessionsDir is the session-log directory (<stateRoot>/sessions, see
+// stateRoot). "" when no home directory can be resolved.
+func sessionsDir() string {
+	root := stateRoot()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "sessions")
+}
+
+func dirExists(dir string) bool {
+	st, err := os.Stat(dir)
+	return err == nil && st.IsDir()
+}
+
+// preferredModelName is the first model picked when scanning the models
+// root: the q5 tuned 4B export. Below ~5-bit the 4B tier loses too much
+// to follow tool-call format and multi-step instructions reliably; the q5
+// tuned export is the smallest quant that stays cogent at this size.
+const preferredModelName = "qwen3.5-4b-sprout-tuned-mlx-q5"
+
+// modelDirEnv returns the explicit model-directory override:
+// SPROUT_LOCAL_MODEL_DIR first, the legacy LOCAL_MODEL_DIR as fallback.
+// The variable name that supplied it is returned so error messages can
+// point at the right one; ("", "") when neither is set.
+func modelDirEnv() (varName, dir string) {
+	if v := os.Getenv("SPROUT_LOCAL_MODEL_DIR"); v != "" {
+		return "SPROUT_LOCAL_MODEL_DIR", v
+	}
+	if v := os.Getenv("LOCAL_MODEL_DIR"); v != "" {
+		return "LOCAL_MODEL_DIR", v
+	}
+	return "", ""
+}
+
+// bestInstalledModel scans the models root for MLX-format model
+// directories and returns the best installed one: the tuned 4B export
+// when present (preserves the historical default where it lives),
+// otherwise the alphabetically-first model dir. A missing or empty root
+// yields "" — the caller surfaces the actionable error.
+func bestInstalledModel() string {
+	root := modelsRoot()
+	if root == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() || !isModelDir(filepath.Join(root, e.Name())) {
+			continue
+		}
+		if e.Name() == preferredModelName {
+			return filepath.Join(root, e.Name())
+		}
+		names = append(names, e.Name())
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return filepath.Join(root, names[0])
+}
+
+// resolveModelDir returns the MLX-format model directory for sinter, or
+// "" when no model can be found (the caller surfaces the error).
 //
 // Resolution order:
-//  1. LOCAL_MODEL_DIR (MLX-format directory: config.json + tokenizer.json
-//     + *.safetensors)
-//  2. defaultModelDir (shared ~/dev/llm-models root)
+//  1. SPROUT_LOCAL_MODEL_DIR, or the legacy LOCAL_MODEL_DIR (MLX-format
+//     directory: config.json + tokenizer.json + *.safetensors)
+//  2. the RAM-aware catalog pick for the models root
+//     (SPROUT_LOCAL_MODELS_ROOT or <stateRoot>/models):
+//     catalog.SelectModelForRAM walks the suggested tier down to smaller
+//     ones plus one stretch tier, preferring installed sprout-tuned
+//     variants and honoring the memory gate
+//  3. the bestInstalledModel scan as a fallback, which also covers
+//     manually-added non-catalog model dirs that SelectModelForRAM cannot
+//     see
 func resolveModelDir() string {
-	if envDir := os.Getenv("LOCAL_MODEL_DIR"); envDir != "" {
+	if varName, envDir := modelDirEnv(); envDir != "" {
 		if isModelDir(envDir) {
 			return envDir
 		}
-		log.Fatalf("LOCAL_MODEL_DIR=%s does not look like a model directory (need config.json + tokenizer.json)", envDir)
+		log.Fatalf("%s=%s does not look like a model directory (need config.json + tokenizer.json + *.safetensors)", varName, envDir)
 	}
-	if isModelDir(defaultModelDir) {
-		return defaultModelDir
+	root := modelsRoot()
+	if root != "" {
+		if m, err := catalog.SelectModelForRAM(root, totalSystemRAM()); err == nil && m != nil {
+			if isModelDir(m.Dir) {
+				return m.Dir
+			}
+		}
 	}
-	return ""
+	return bestInstalledModel()
 }
 
 // isModelDir reports whether dir contains the files sinter needs to load a
@@ -518,7 +607,7 @@ func evictModelsLocked(keep int, recent string) {
 // dumpRawFull writes the unhygiened stream with a reason header — the
 // forensic view when hygiene eats an entire generation.
 func dumpRawFull(modelDir, text, note string) {
-	dir := filepath.Join(homeDir(), logDirName, "raw")
+	dir := filepath.Join(sessionsDir(), "raw")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
@@ -534,10 +623,10 @@ func dumpRawFull(modelDir, text, note string) {
 }
 
 // dumpRaw appends one generation's raw (hygiene-passed) text to a
-// timestamped file under ~/.sprout_local_sessions/raw/. Best effort: debugging
+// timestamped file under <stateRoot>/sessions/raw/. Best effort: debugging
 // output must never break the chat.
 func dumpRaw(modelDir, text string) {
-	dir := filepath.Join(homeDir(), logDirName, "raw")
+	dir := filepath.Join(sessionsDir(), "raw")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}

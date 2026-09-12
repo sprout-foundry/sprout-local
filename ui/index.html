@@ -265,6 +265,39 @@
       select { max-width: 9rem; }
       #thread { padding: 1rem .75rem 1.5rem; }
     }
+
+    /* ── first-run "get a model" panel ───────────────────────────────── */
+    #get-model {
+      flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-start; padding: 2.2rem 1.2rem;
+    }
+    #get-model .gm-card {
+      width: 100%; max-width: 34rem; background: var(--box);
+      border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: var(--shadow); padding: 1.2rem 1.3rem;
+    }
+    #get-model h3 { margin: 0 0 .3rem; font-size: 1.05rem; }
+    #get-model .gm-sub { margin: 0 0 1rem; color: var(--sec); font-size: .85rem; }
+    .gm-item {
+      display: flex; align-items: center; gap: .7rem;
+      padding: .55rem .2rem; border-bottom: 1px solid var(--border);
+    }
+    .gm-item:last-child { border-bottom: none; }
+    .gm-item .gm-name { font-weight: 600; font-size: .92rem; }
+    .gm-item .gm-tag {
+      font-size: .72rem; color: var(--sec); flex-shrink: 0;
+    }
+    .gm-item .gm-tag.reco { color: var(--accent); font-weight: 600; }
+    .gm-item .gm-name-wrap { flex: 1; min-width: 0; }
+    .gm-item .gm-repo { font-size: .7rem; color: var(--sec); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gm-dl {
+      flex-shrink: 0; border: 1px solid var(--accent); background: var(--accent);
+      color: #fff; border-radius: 8px; padding: .3rem .8rem; font-size: .8rem;
+      cursor: pointer;
+    }
+    .gm-dl:hover { background: var(--hover); border-color: var(--hover); }
+    .gm-dl[disabled] { opacity: .5; cursor: default; }
+    .gm-busy { font-size: .82rem; color: var(--sec); padding-top: .8rem; }
   </style>
 </head>
 <body>
@@ -308,6 +341,15 @@
       <button id="send-btn" disabled>Send</button>
     </div>
     <div id="hint">Enter to send · Shift+Enter for newline · runs entirely on this machine</div>
+  </div>
+
+  <div id="get-model" hidden>
+    <div class="gm-card">
+      <h3>Download a model to get started</h3>
+      <p class="gm-sub" id="gm-sub">No local models are installed yet. Pick one below — it downloads straight to this machine and nothing leaves it.</p>
+      <div id="gm-list"></div>
+      <div class="gm-busy" id="gm-busy" hidden></div>
+    </div>
   </div>
 
       <noscript>chatllm needs JavaScript for the streaming chat UI.</noscript>
@@ -840,6 +882,13 @@
                 finishToolChip(String(ctl.tool_done), !!ctl.ok, ctl.args, ctl.result);
                 return;
               }
+              if (ctl.pulled !== undefined) {
+                clearDownloading();
+                addMessage('note', 'Downloaded ' + ctl.pulled + ' — picking it up.');
+                if (ctl.model) { savedModel = ctl.model; localStorage.setItem('chatllm-model', ctl.model); }
+                refreshModels();
+                return;
+              }
               if (ctl.conv !== undefined) {
                 currentConv = ctl.conv;
                 localStorage.setItem('chatllm-conv', ctl.conv);
@@ -984,32 +1033,122 @@
 
       // ── models ───────────────────────────────────────────────────────
       var savedModel = localStorage.getItem('chatllm-model');
-      fetch('/models').then(function (r) { return r.json(); }).then(function (data) {
-        var models = data.models || [];
-        models.forEach(function (name) {
-          var opt = document.createElement('option');
-          opt.value = name;
-          opt.textContent = name;
-          modelSelect.appendChild(opt);
-        });
-        if (!models.length && data.default) {
-          var opt = document.createElement('option');
-          opt.value = "";
-          opt.textContent = data.default + ' (default)';
-          modelSelect.appendChild(opt);
-        }
-        var want = savedModel || data.default;
-        if (want) {
-          for (var i = 0; i < modelSelect.options.length; i++) {
-            if (modelSelect.options[i].value === want) { modelSelect.value = want; break; }
-          }
-        }
-        modelSelect.addEventListener('change', function () {
-          localStorage.setItem('chatllm-model', modelSelect.value);
-          addMessage('note', 'Model set to ' + (modelSelect.value || data.default) + ' — applies from your next message.');
-        });
-      });
+      var getModel = qs('#get-model');
+      var gmList = qs('#gm-list');
+      var gmBusy = qs('#gm-busy');
+      var gmSub = qs('#gm-sub');
 
+      // refreshModels re-populates the model picker from /models and shows
+      // the first-run download panel when nothing is installed. Called at
+      // init and again after a -pull completes, so a freshly downloaded
+      // model appears in the picker without a reload.
+      function refreshModels() {
+        return fetch('/models').then(function (r) { return r.json(); }).then(function (data) {
+          var models = data.models || [];
+          modelSelect.innerHTML = '';
+          models.forEach(function (name) {
+            var opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            modelSelect.appendChild(opt);
+          });
+          if (!models.length && data.default) {
+            var opt = document.createElement('option');
+            opt.value = "";
+            opt.textContent = data.default + ' (default)';
+            modelSelect.appendChild(opt);
+          }
+          var want = savedModel || data.default;
+          if (want) {
+            for (var i = 0; i < modelSelect.options.length; i++) {
+              if (modelSelect.options[i].value === want) { modelSelect.value = want; break; }
+            }
+          }
+          if (!modelSelect._changeBound) {
+            modelSelect.addEventListener('change', function () {
+              savedModel = modelSelect.value;
+              localStorage.setItem('chatllm-model', savedModel);
+              addMessage('note', 'Model set to ' + (modelSelect.value || data.default) + ' — applies from your next message.');
+            });
+            modelSelect._changeBound = true;
+          }
+          // No models installed → surface the download panel instead of an
+          // empty picker (a fresh machine otherwise has no way in).
+          if (models.length === 0 && !data.default) {
+            loadGetModelPanel();
+          } else {
+            getModel.hidden = true;
+          }
+        }).catch(function () {
+          // A transient /models failure must not hide the picker we already
+          // have; the download panel only appears on a definitive empty list.
+        });
+      }
+
+      // loadGetModelPanel fills the first-run panel with the pull catalog
+      // (this machine's RAM tier per model) and a per-model download button.
+      function loadGetModelPanel() {
+        getModel.hidden = false;
+        gmList.innerHTML = '';
+        gmBusy.hidden = true;
+        gmBusy.textContent = '';
+        fetch('/pull').then(function (r) { return r.json(); }).then(function (data) {
+          var catalog = data.catalog || [];
+          if (data.models_root) {
+            gmSub.textContent = 'No local models in ' + data.models_root +
+              '. Pick one below — it downloads to this machine and nothing leaves it.';
+          }
+          if (!catalog.length) return;
+          catalog.forEach(function (entry) {
+            var row = document.createElement('div');
+            row.className = 'gm-item';
+            var nameWrap = document.createElement('div');
+            nameWrap.className = 'gm-name-wrap';
+            var nm = document.createElement('div');
+            nm.className = 'gm-name'; nm.textContent = entry.name;
+            var repo = document.createElement('div');
+            repo.className = 'gm-repo'; repo.textContent = entry.repo;
+            nameWrap.appendChild(nm); nameWrap.appendChild(repo);
+            var tag = document.createElement('span');
+            tag.className = 'gm-tag' + (entry.tag === 'recommended for this machine' ? ' reco' : '');
+            tag.textContent = entry.tag || '';
+            var btn = document.createElement('button');
+            btn.className = 'gm-dl';
+            btn.textContent = 'Download';
+            btn.addEventListener('click', function () { startDownload(entry.name, row); });
+            row.appendChild(nameWrap); row.appendChild(tag); row.appendChild(btn);
+            gmList.appendChild(row);
+          });
+        }).catch(function () {
+          gmBusy.hidden = false;
+          gmBusy.textContent = 'Could not load the model catalog — check the server and reload.';
+        });
+      }
+
+      // startDownload asks the server (over the socket) to pull a catalog
+      // model, then re-lists models when the "pulled" frame arrives. While
+      // one download is in flight the other buttons are disabled.
+      var downloading = false;
+      function startDownload(name, row) {
+        if (downloading) return;
+        downloading = true;
+        var btns = gmList.querySelectorAll('.gm-dl');
+        for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+        if (row) row.querySelector('.gm-dl').textContent = 'Downloading…';
+        gmBusy.hidden = false;
+        gmBusy.textContent = 'Downloading ' + name + '… (this can take a while)';
+        addMessage('note', 'Downloading ' + name + '…');
+        sendCtl({ pull: name });
+      }
+      function clearDownloading() {
+        if (!downloading) return;
+        downloading = false;
+        var btns = gmList.querySelectorAll('.gm-dl');
+        for (var i = 0; i < btns.length; i++) { btns[i].disabled = false; btns[i].textContent = 'Download'; }
+        gmBusy.hidden = true;
+      }
+
+      refreshModels();
       connect();
       input.focus();
       autoGrow();

@@ -154,11 +154,7 @@ func TestHandleToolsCommand(t *testing.T) {
 
 func TestSkills(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir) // skillsDir derives from home
-	skills := filepath.Join(dir, ".chatllm", "skills")
-	if err := os.MkdirAll(skills, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("SPROUT_LOCAL_SKILLS_DIR", dir) // skillsDir: explicit override
 
 	// Write two good skills and two rejected ones (bad JSON shape, name
 	// collision with a built-in).
@@ -167,7 +163,7 @@ func TestSkills(t *testing.T) {
 	bad := `{"description":"no name or command"}`
 	collide := `{"name":"read_file","description":"collides","command":"/bin/echo"}`
 	for name, content := range map[string]string{"a.json": good, "b.json": also, "bad.json": bad, "c.json": collide} {
-		if err := os.WriteFile(filepath.Join(skills, name), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

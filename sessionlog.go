@@ -2,7 +2,8 @@ package main
 
 // ---------------------------------------------------------------------------
 // Session logging — preserves the bash tool's behavior of writing every
-// exchange to ~/.sprout_local_sessions/<timestamp>.log.
+// exchange to <stateRoot>/sessions/<timestamp>.log (default
+// ~/.sprout-local/sessions/).
 // ---------------------------------------------------------------------------
 
 import (
@@ -18,10 +19,13 @@ var (
 	logPath    string
 )
 
-// defaultLogPath returns ~/.sprout_local_sessions/<YYYYMMDDHHMMSS>.log, creating the
-// directory when needed (same location the bash tool used).
+// defaultLogPath returns <stateRoot>/sessions/<YYYYMMDDHHMMSS>.log,
+// creating the directory when needed.
 func defaultLogPath() string {
-	dir := filepath.Join(homeDir(), logDirName)
+	dir := sessionsDir()
+	if dir == "" {
+		return ""
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "" // logging is best-effort; never fatal
 	}

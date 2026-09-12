@@ -8,10 +8,7 @@ require golang.org/x/sys v0.45.0
 
 require github.com/gorilla/websocket v1.5.3
 
-require github.com/sprout-foundry/seed v0.0.0
-
-// Local seed checkout (agent loop: query → tool calls → response).
-replace github.com/sprout-foundry/seed => ../seed
+require github.com/sprout-foundry/seed v1.4.0
 
 // Local copy of sinter v0.1.1 with a linux+ggml patch (llm/qwen35/compiled_stub.go)
 // added because upstream v0.1.2 cannot compile on Linux+GGML (undefined

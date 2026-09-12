@@ -26,13 +26,18 @@ import (
 	"github.com/sprout-foundry/sinter/llm/catalog"
 )
 
-// modelsRoot is the shared on-device models directory (same root gmitllm,
-// sprout, and auto-term use). SPROUT_LOCAL_MODELS_ROOT overrides it.
+// modelsRoot is the on-device models directory: SPROUT_LOCAL_MODELS_ROOT,
+// or <stateRoot>/models (default ~/.sprout-local/models) when unset.
+// Models land here from -pull and are listed by /models.
 func modelsRoot() string {
 	if root := os.Getenv("SPROUT_LOCAL_MODELS_ROOT"); root != "" {
 		return root
 	}
-	return filepath.Join(homeDir(), "dev", "llm-models")
+	state := stateRoot()
+	if state == "" {
+		return ""
+	}
+	return filepath.Join(state, "models")
 }
 
 // findCatalogModel resolves a catalog entry by canonical name, accepting a

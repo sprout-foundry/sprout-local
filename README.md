@@ -7,8 +7,9 @@ inference via [sinter](https://github.com/sprout-foundry/sinter) (MLX on
 Apple Silicon, GGML on Linux), switchable local models, and a small set
 of helper tools. Chat-first — not a coding agent.
 
-- **Local only.** No API providers, no cloud. Models come from the
-  shared local models root (`~/dev/llm-models`).
+- **Local only.** No API providers, no cloud. Models download from
+  HuggingFace via `-pull` into the local models root
+  (`~/.sprout-local/models`, overridden by `SPROUT_LOCAL_MODELS_ROOT`).
 - **Chat-first.** Tools exist to help everyday questions — read a file,
   jot a note, quick shell lookup, fetch a page — not to drive a codebase.
 - **One binary.** `sprout-local` chats in the terminal; `-serve` hosts a
@@ -75,7 +76,7 @@ working directory plus `/tmp`; `run_command` blocks shell
 metacharacters and asks y/N (`/tools yolo` skips).
 
 User skills are JSON-defined fixed-command tools in
-`~/.chatllm/skills/*.json`:
+`~/.sprout-local/skills/*.json`:
 
 ```json
 {
@@ -92,7 +93,7 @@ skill is the consent.
 ## Web UI and API (`-serve`)
 
 - Chat UI with model picker, conversation sidebar (server-side
-  persistence in `~/.chatllm/conversations/`), streaming with status
+  persistence in `~/.sprout-local/conversations/`), streaming with status
   and metrics (prompt/gen tokens, t/s, context use), stop/retry, and
   click-to-expand tool chips. Files written as HTML get preview links.
 - OpenAI-compatible endpoint on the same port:

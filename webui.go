@@ -4,24 +4,28 @@ package main
 // webui.go — embedded single-binary web chat.
 //
 // `chatllm -serve` hosts the UI (static assets embedded at build time via
-// go:embed) plus a WebSocket API (/ws), model listing (/models), and the
-// OpenAI-compatible /v1 endpoint (apiserver.go) over in-process sinter
-// inference. UI_SPROUT_LOCAL_DEV=1 serves assets from disk (chatllm/ui/)
-// instead, so the UI can be edited without a rebuild.
+// go:embed) plus a WebSocket API (/ws), model listing (/models), model
+// downloads (/pull), and the OpenAI-compatible /v1 endpoint (apiserver.go)
+// over in-process sinter inference. UI_SPROUT_LOCAL_DEV=1 serves assets
+// from disk (chatllm/ui/) instead, so the UI can be edited without a
+// rebuild.
 //
 // Each WebSocket connection owns a seed agent (tools + skills enabled via
 // the per-turn "tools" flag; run_command auto-declines — see ensureAgent).
-// Conversations persist to ~/.chatllm/conversations/ after every turn.
+// Conversations persist to ~/.sprout-local/conversations/ after every turn.
 //
 // Protocol (JSON text frames; deltas are raw text):
 //   client → server: {"model":"…","prompt":"…","tools":bool}
 //                    {"list":true} | {"load":"id"} | {"delete":"id"}
 //                    {"new_chat":true} | {"resume":"id"}
+//                    {"pull":"name"} (download a catalog model into the
+//                                     models root, then re-list)
 //   server → client: raw text deltas; then {"done":true}
 //                    {"status":"…"} (working / loading model … / generating)
 //                    {"tool":"name"} / {"tool_done":"name","ok":bool}
 //                    {"metrics":{prompt_tokens,gen_tokens,tps,pp,ctx…}}
 //                    {"note":"…"} | {"error":"…"}
+//                    {"pulled":"name","dir":"…"} (download complete)
 //                    {"conv":"id"} | {"conversations":[…]} | {"transcript":[…]}
 //                    {"deleted":"id"}
 // ---------------------------------------------------------------------------
@@ -44,6 +48,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/sinter/llm"
+	"github.com/sprout-foundry/sinter/llm/catalog"
 )
 
 //go:embed all:ui
@@ -226,10 +231,11 @@ func importTranscript(a *core.Agent, msgs []storedMsg) error {
 // ─── Model discovery ─────────────────────────────────────────────────────
 
 // availableModels lists the MLX model directories under the shared models
-// root (the same root -pull downloads into). Empty when LOCAL_MODEL_DIR
-// pins the process to one model.
+// root (the same root -pull downloads into). Empty when an explicit model
+// dir env (SPROUT_LOCAL_MODEL_DIR or the legacy LOCAL_MODEL_DIR) pins the
+// process to one model.
 func availableModels() []string {
-	if os.Getenv("LOCAL_MODEL_DIR") != "" {
+	if _, pinned := modelDirEnv(); pinned != "" {
 		return nil // pinned: no listing
 	}
 	root := modelsRoot()
@@ -255,7 +261,7 @@ func resolveWebModelDir(name string) (string, error) {
 	if name == "" {
 		dir := resolveModelDir()
 		if dir == "" {
-			return "", fmt.Errorf("no model configured (set LOCAL_MODEL_DIR or -m)")
+			return "", fmt.Errorf("no model configured (set SPROUT_LOCAL_MODEL_DIR or -m)")
 		}
 		return dir, nil
 	}
@@ -338,9 +344,16 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 			Delete  string `json:"delete"`
 			NewChat bool   `json:"new_chat"`
 			Resume  string `json:"resume"` // client reconnecting: restore server history if this conv exists
+			Pull    string `json:"pull"`   // download a catalog model into the models root
 		}
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			c.enqueue(map[string]string{"error": "bad request: " + err.Error()})
+			continue
+		}
+
+		// Model download frame (no generation).
+		if msg.Pull != "" {
+			s.handlePull(c, msg.Pull)
 			continue
 		}
 
@@ -423,6 +436,31 @@ func (s *webServer) startConversation(c *wsClient) {
 	c.agent = nil // fresh agent on the next turn; state starts empty
 	c.mu.Unlock()
 	c.enqueue(map[string]any{"conv": c.conv.ID, "conversations": listConversations()})
+}
+
+// handlePull downloads a catalog model (name or unique prefix) into the
+// shared models root, then refreshes the model listing. Runs in the
+// connection's read loop, so a slow download blocks further frames —
+// acceptable: the UI is busy-waiting on the download anyway. On success it
+// reports the new model dir so the client can select it; a RAM-gate
+// refusal or missing hf CLI surfaces as an error frame.
+func (s *webServer) handlePull(c *wsClient, name string) {
+	m, err := findCatalogModel(name)
+	if err != nil {
+		c.enqueue(map[string]string{"error": err.Error()})
+		return
+	}
+	dest, err := downloadModel(ctxBg(), m)
+	if err != nil {
+		c.enqueue(map[string]string{"error": err.Error()})
+		return
+	}
+	c.enqueue(map[string]any{
+		"pulled":    m.Name,
+		"dir":       dest,
+		"model":     filepath.Base(dest),
+		"conversations": listConversations(),
+	})
 }
 
 // loadConversation restores a saved conversation into a fresh agent and
@@ -649,9 +687,16 @@ type webServer struct{}
 
 func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	def := filepath.Base(resolveModelDir())
+	// No model installed → default stays "" so the UI's first-run
+	// download panel triggers (models:[] + default:"" is the panel's
+	// exact precondition). filepath.Base("") would be "." — a bogus
+	// entry that suppresses the panel.
+	def := ""
+	if dir := resolveModelDir(); dir != "" {
+		def = filepath.Base(dir)
+	}
 	names := availableModels()
-	if names == nil { // pinned to a single model
+	if names == nil && def != "" { // pinned to a single model
 		names = []string{def}
 	}
 	// Default model first so the UI preselects it.
@@ -664,6 +709,41 @@ func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"models":  names,
 		"default": def,
+	})
+}
+
+// handlePullCatalog lists the downloadable catalog models with this
+// machine's RAM tier for each and the RAM-recommended default. The UI uses
+// this to offer downloads when no models are installed (a model-less
+// machine otherwise has an empty picker and no way in).
+func (s *webServer) handlePullCatalog(w http.ResponseWriter, r *http.Request) {
+	ram := totalSystemRAM()
+	suggested := catalog.SuggestedForRAM(ram)
+	type entry struct {
+		Name  string `json:"name"`
+		Repo  string `json:"repo"`
+		Tag   string `json:"tag,omitempty"`
+	}
+	entries := make([]entry, 0, len(catalog.ModelCatalog))
+	for _, m := range catalog.ModelCatalog {
+		tag := ""
+		switch {
+		case ram != 0 && m.MinRAMSelect != 0 && ram < m.MinRAMSelect:
+			tag = "needs more RAM"
+		case ram != 0 && m.MinRAMSuggested != 0 && ram < m.MinRAMSuggested && m.MinRAMSuggested != ^uint64(0):
+			tag = "tight fit"
+		}
+		if m.Name == suggested.Name {
+			tag = "recommended for this machine"
+		}
+		entries = append(entries, entry{Name: m.Name, Repo: m.HFRepo, Tag: tag})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"catalog":     entries,
+		"suggested":   suggested.Name,
+		"installed":   availableModels(),
+		"models_root": modelsRoot(),
 	})
 }
 
@@ -688,18 +768,32 @@ func uiRoot() fs.FS {
 // serveHosts runs chatllm -serve: embedded UI plus /ws, /models, and the
 // OpenAI-compatible /v1 endpoint. Startup is quiet: one banner with the
 // address, engine, and default model (use -v for engine detail).
+//
+// A model-less machine is not fatal here: the UI's model picker offers
+// -pull downloads, so we log a warning and serve anyway (the REPL path
+// would instead run the first-run walkthrough).
 func serveHosts(addr string) {
 	mux := http.NewServeMux()
 	s := &webServer{}
 	mux.HandleFunc("/ws", s.serveWS)
 	mux.HandleFunc("/models", s.handleModels)
+	mux.HandleFunc("/pull", s.handlePullCatalog)
 	mux.HandleFunc("/preview/{path...}", handlePreview)
 	mux.Handle("/", http.FileServer(http.FS(uiRoot())))
 	serveAPI(mux)
 
-	engine, modelPath := modelBackend()
-	fmt.Printf("chatllm serving on http://%s — chat UI, model picker, OpenAI-style /v1 API\n", addr)
-	fmt.Printf("engine %s, default model %s (Ctrl-C to stop)\n", engine, filepath.Base(modelPath))
+	// A model-less machine is not fatal under -serve: the UI's model
+	// picker offers -pull downloads, so warn and serve anyway. (The REPL
+	// path would instead run the first-run walkthrough; only -serve takes
+	// this route.)
+	if resolveModelDir() == "" {
+		log.Printf("no models installed — download one via the web UI model picker")
+		fmt.Printf("chatllm serving on http://%s — chat UI, model picker, OpenAI-style /v1 API (no models installed yet)\n", addr)
+	} else {
+		engine, modelPath := modelBackend()
+		fmt.Printf("chatllm serving on http://%s — chat UI, model picker, OpenAI-style /v1 API\n", addr)
+		fmt.Printf("engine %s, default model %s (Ctrl-C to stop)\n", engine, filepath.Base(modelPath))
+	}
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("serve: %v", err)
 	}

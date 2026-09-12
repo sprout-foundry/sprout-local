@@ -1,4 +1,6 @@
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/sprout-foundry/seed v1.4.0 h1:3LuLfsCqCtxLHdFISSHz8PlI3AQ0iQ0I7TUt2Kga23o=
+github.com/sprout-foundry/seed v1.4.0/go.mod h1:pmi/FFipp9juUY2LnHwhuejGtwbiQa581u/6wTFIxCU=
 golang.org/x/sys v0.45.0 h1:dO4czNzziLiiXplLQgBCEpCvXQ3dnkn0SdaZSYdQ+FY=
 golang.org/x/sys v0.45.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

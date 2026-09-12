@@ -3,7 +3,9 @@ package main
 // ---------------------------------------------------------------------------
 // skills.go — user-addable tools as "skills".
 //
-// A skill is a JSON file in ~/.chatllm/skills/*.json:
+// A skill is a JSON file in <stateRoot>/skills/*.json (default
+// ~/.sprout-local/skills; SPROUT_LOCAL_SKILLS_DIR overrides the
+// directory outright, SPROUT_LOCAL_STATE_ROOT moves the root):
 //
 //   {
 //     "name": "sysinfo",
@@ -39,20 +41,33 @@ type skill struct {
 	Args        []string `json:"args"`
 }
 
-// skillsDir is ~/.chatllm/skills.
+// skillsDir is the skills directory: SPROUT_LOCAL_SKILLS_DIR, else
+// <stateRoot>/skills (default ~/.sprout-local/skills). Legacy compat:
+// when the new directory does not exist but the pre-migration
+// ~/.chatllm/skills does, the legacy directory is used.
 func skillsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if dir := os.Getenv("SPROUT_LOCAL_SKILLS_DIR"); dir != "" {
+		return dir
+	}
+	state := stateRoot()
+	if state == "" {
 		return ""
 	}
-	return filepath.Join(home, ".chatllm", "skills")
+	newDir := filepath.Join(state, "skills")
+	if dirExists(newDir) {
+		return newDir
+	}
+	if legacy := filepath.Join(homeDir(), ".chatllm", "skills"); dirExists(legacy) {
+		return legacy
+	}
+	return newDir
 }
 
 // skillRegistry holds the loaded skills (nil before first load).
 var skillRegistry []skill
 
-// reloadSkills reads every *.json in ~/.chatllm/skills. Returns the count
-// and an error list (bad files are skipped, not fatal).
+// reloadSkills reads every *.json in the skills directory. Returns the
+// count and an error list (bad files are skipped, not fatal).
 func reloadSkills() (int, []error) {
 	skillRegistry = nil
 	dir := skillsDir()

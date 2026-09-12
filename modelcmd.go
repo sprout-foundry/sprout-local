@@ -125,8 +125,8 @@ func modelFromRef(ref string) (string, error) {
 
 // availableModelNames lists installed models: MLX-format directories under
 // the shared models root, plus the process default when it lives elsewhere
-// (e.g. LOCAL_MODEL_DIR pointing outside the root). Sorted; the active
-// default is prepended so it can be listed first.
+// (e.g. SPROUT_LOCAL_MODEL_DIR pointing outside the root). Sorted; the
+// active default is prepended so it can be listed first.
 func availableModelNames() (names []string, def string) {
 	root := modelsRoot()
 	entries, err := os.ReadDir(root)

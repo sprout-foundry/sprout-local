@@ -11,7 +11,7 @@ agent loop (the same spine as sprout), and a small set of helper tools
 when plain chat isn't enough. It is not a coding agent — no repo
 awareness, no code-editing loop; tools exist to help everyday chat
 questions, not to drive a codebase. Switch models mid-conversation from
-the shared local models root (`/models`, `/model`, `/pull`).
+the local models root (`/models`, `/model`, `/pull`).
 `sprout-local -serve` also hosts an embedded web chat UI (single binary, no
 runtime dependencies).
 
@@ -33,7 +33,7 @@ structured tools.
 | `seedexecutor.go` | the tool registry as a seed `core.ToolExecutor` (run_command y/N gate via seed UI) |
 | `replevents.go` | seed events → REPL status lines (`tool →` / `← result:`) |
 | `tools.go` | helper tool registry (read_file, write_file, run_command, web_fetch), path sandbox, qwen tool-prompt/parse helpers, `/tools` command |
-| `skills.go` | user skills: JSON-defined fixed-command tools in `~/.chatllm/skills/*.json`, loaded by `/tools` |
+| `skills.go` | user skills: JSON-defined fixed-command tools in `~/.sprout-local/skills/*.json`, loaded by `/tools` |
 | `apiserver.go` | `-serve` OpenAI-compatible API: `/v1/chat/completions` (stream + tool_calls) routed to any installed model, `/v1/models`, `/health` |
 | `modelcmd.go` | `/model`, `/models`, `/pull` slash commands: model switching, listing, cache eviction |
 | `webui.go` | `-serve`: embedded web UI (go:embed), WebSocket chat on a per-connection seed agent (tools, status/metrics frames), conversation persistence |
@@ -43,7 +43,7 @@ structured tools.
 | `chatmodel_linux_ggml.go` | Per-platform sinter arch registration — Linux/GGML (qwen2 + qwen35 only) |
 | `backend.go` | Startup model probe (fails fast when no model dir resolves) |
 | `signalwatch.go` | Ctrl-C: first signal cancels the in-flight generation, second exits |
-| `sessionlog.go` | Session logs to `~/.sprout_local_sessions/<timestamp>.log` |
+| `sessionlog.go` | Session logs to `~/.sprout-local/sessions/<timestamp>.log` |
 | `download.go` | `-pull`: HF download via `hf` CLI, sinter catalog metadata, RAM gate |
 | `urlfetch.go` | Web `#url` enrichment: fetch + readable-text extraction for prompts |
 | `factcheck.go` | Post-answer Yes/No self-check using the loaded model (web UI) |
@@ -52,7 +52,7 @@ structured tools.
 
 ### Skills
 
-User-addable tools: drop a JSON file in `~/.chatllm/skills/` —
+User-addable tools: drop a JSON file in `~/.sprout-local/skills/` —
 `{"name":"motd","description":"…","command":"/bin/echo","args":["hi"]}` —
 and `/tools` picks it up (fixed command line, no model-supplied params;
 installing the skill is the consent, so no per-call prompt). Skills run
@@ -103,15 +103,31 @@ Ctrl-C cancels the current response and keeps the session; press twice quickly t
 - OpenAI-compatible API on the same port: `POST /v1/chat/completions` (SSE streaming, native `tool_calls` via sinter's openaisserver), `GET /v1/models` (all installed models; the request's `model` field selects any of them), `GET /health`.
 - `#url` enrichment: `#https://…` in a prompt fetches the page (2 MiB / 8k-char caps, code-block URLs ignored) and appends its readable text to the turn; fetch failures arrive as `{"note":...}` frames.
 - Fact self-check: after each web turn the same model re-reads the turn as a reference and answers Yes/No at temperature 0; a confident "No" emits a warning note frame (`factcheck.go`).
-- `/models` lists MLX model dirs in the shared models root (default first); the UI can switch models mid-conversation (history is preserved).
-- Conversations persist per user (server-side JSON in `~/.chatllm/conversations/`); a disconnect cancels the in-flight generation and the client resumes the conversation on reconnect (partial answers from Stop are kept).
+- `/models` lists MLX model dirs in the models root (default first); the UI can switch models mid-conversation (history is preserved).
+- Conversations persist per user (server-side JSON in `~/.sprout-local/conversations/`); a disconnect cancels the in-flight generation and the client resumes the conversation on reconnect (partial answers from Stop are kept).
 - Palette: One Light / One Dark (from the retired `chat/` UI); theme toggle is persisted in localStorage.
 
 ## Model Resolution Order
 
 `resolveModelDir()` checks in this order:
-1. `SPROUT_LOCAL_MODEL_DIR` environment variable (or `-m` flag)
-2. `~/dev/llm-models/qwen3.5-4b-sprout-tuned-mlx-q5` (shared models root)
+1. `SPROUT_LOCAL_MODEL_DIR` environment variable (or `-m` flag); the legacy
+   `LOCAL_MODEL_DIR` is honored as a fallback
+2. the models root (`SPROUT_LOCAL_MODELS_ROOT` or `~/.sprout-local/models`):
+   the best installed model — the `qwen3.5-4b-sprout-tuned-mlx-q5` tuned
+   export when present, else the alphabetically-first model dir. No models
+   installed → startup fails with a hint to set `SPROUT_LOCAL_MODEL_DIR`
+   or run `sprout-local -pull`.
+
+State layout (all under `~/.sprout-local/`, moved by
+`SPROUT_LOCAL_STATE_ROOT`; models additionally by
+`SPROUT_LOCAL_MODELS_ROOT`, skills additionally by
+`SPROUT_LOCAL_SKILLS_DIR`):
+
+- `models/` — MLX-format model directories (`-pull` downloads here)
+- `conversations/` — web-UI conversation JSON (legacy `~/.chatllm/conversations`
+  is still served when the new dir is absent)
+- `skills/` — user skill JSON files (legacy `~/.chatllm/skills` compat as above)
+- `sessions/` — session logs (+ `sessions/raw/` debug dumps)
 
 ## Key Constants
 
@@ -154,5 +170,5 @@ https://github.com/sprout-foundry/sinter/issues/1.
 - **In-process streaming** — sinter's `Generate` takes an onToken callback; each token is decoded and streamed through a filter that suppresses `<tool_call>` markup, while the parsed clean text enters seed state and logs.
 - **Full re-render per turn** — the entire message list goes through `FormatChat` each turn; sinter's prefix caching makes repeat prefixes cheap.
 - **Tools default off** — chat first, tools when asked. A 4B model spends tokens and attention on the protocol; `/tools on` opts in per session. Off means `NoopExecutor`, so the model never sees the tool prompt.
-- **Session logs** — every exchange appends to `~/.sprout_local_sessions/`, so scrollback survives terminal loss.
+- **Session logs** — every exchange appends to `~/.sprout-local/sessions/`, so scrollback survives terminal loss.
 - **Download stays app-level** — sinter's README keeps the catalog separate from the engine "so apps can keep their own list"; the engine has no download API. The `hf` CLI mechanics (pipe draining, disk-based progress polling) are ported from sprout's `localmodel.EnsureModel`.

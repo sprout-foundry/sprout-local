@@ -118,7 +118,7 @@ cat <<'NEXT'
 Next steps:
   sprout-local -pull        list downloadable models (RAM-tier annotated)
   sprout-local -pull <name> download one, then chat
-  sprout-local              interactive REPL (models: ~/dev/llm-models)
+  sprout-local              interactive REPL (models: ~/.sprout-local/models)
   sprout-local -serve       web UI + OpenAI-style /v1 API on :8321
 
 NEXT

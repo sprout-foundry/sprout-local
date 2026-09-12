@@ -4,7 +4,9 @@ package main
 // chatllm — interactive terminal chat over in-process sinter inference.
 //
 // Patterns follow ../gmitllm: single Go binary, sinter (in-process MLX)
-// engine, shared ~/dev/llm-models model root, LOCAL_MODEL_DIR override.
+// engine. State lives under ~/.sprout-local (models, conversations,
+// skills, session logs); model selection via SPROUT_LOCAL_MODEL_DIR
+// (or -m).
 //
 // REPL: read → expand multiline → dispatch slash commands → stream the
 // response token by token → append to history → log the exchange.
@@ -27,8 +29,7 @@ import (
 
 // Session defaults.
 const (
-	historyLimit = 200                      // hard cap on retained messages (100 turns)
-	logDirName   = ".sprout_local_sessions" // session log dir (bash tool heritage)
+	historyLimit = 200 // hard cap on retained messages (100 turns)
 )
 
 // currentGen tracks the in-flight generation so Ctrl-C can cancel it.
@@ -65,7 +66,7 @@ func registerGen(cancel context.CancelFunc) func() {
 
 func main() {
 	// ── CLI flags ────────────────────────────────────────────────────────
-	//   -m / --model-dir : model directory override (same as LOCAL_MODEL_DIR)
+	//   -m / --model-dir : model directory override (same as SPROUT_LOCAL_MODEL_DIR)
 	//   -s / --system    : system prompt for the session
 	//   -p / --prompt    : one-shot prompt (print response and exit)
 	//   -no-log          : disable session logging
@@ -74,7 +75,7 @@ func main() {
 	//                      lists available models)
 	// ─────────────────────────────────────────────────────────────────────
 	fs := flag.NewFlagSet("chatllm", flag.ExitOnError)
-	flagModelDir := fs.String("m", "", "Model directory (overrides LOCAL_MODEL_DIR)")
+	flagModelDir := fs.String("m", "", "Model directory (overrides SPROUT_LOCAL_MODEL_DIR)")
 	flagSystem := fs.String("s", "", "System prompt for the session")
 	flagPrompt := fs.String("p", "", "One-shot prompt: stream the response and exit")
 	flagNoLog := fs.Bool("no-log", false, "Disable session logging")
@@ -90,8 +91,9 @@ func main() {
 	// or CHATLLM_DEBUG is set. Installed before any model loads.
 	installLogFilter(*flagVerbose || os.Getenv("CHATLLM_DEBUG") != "")
 
-	// Skills (~/.chatllm/skills/*.json) load once at startup; /tools
-	// reloads them in the REPL. Load failures are non-fatal noise.
+	// Skills (<stateRoot>/skills/*.json, default ~/.sprout-local/skills)
+	// load once at startup; /tools reloads them in the REPL. Load
+	// failures are non-fatal noise.
 	if n, errs := reloadSkills(); len(errs) > 0 {
 		for _, err := range errs {
 			log.Printf("skill: %v", err)
@@ -133,13 +135,12 @@ func main() {
 		}
 		fmt.Printf("Pulled %s → %s\n", m.Name, dest)
 		// Select the freshly pulled model for this run.
-		os.Setenv("LOCAL_MODEL_DIR", dest)
+		os.Setenv("SPROUT_LOCAL_MODEL_DIR", dest)
 	}
-
 	// -m override: applied before the model loads. resolveModelDir reads the
 	// env var, so we set it for this process.
 	if *flagModelDir != "" {
-		os.Setenv("LOCAL_MODEL_DIR", *flagModelDir)
+		os.Setenv("SPROUT_LOCAL_MODEL_DIR", *flagModelDir)
 	}
 	// -serve: host the embedded web UI + WebSocket API. Session logging is
 	// REPL-only, so this path never touches the session log.
@@ -151,6 +152,15 @@ func main() {
 	if !*flagNoLog {
 		logPath = defaultLogPath()
 		logEnabled = true
+	}
+
+	// First-run walkthrough: a bare REPL on a model-less machine would
+	// otherwise fatal out in modelBackend. Offer to download a model. Only
+	// the interactive REPL reaches this — -p one-shot and -transcript pipe
+	// mode bail out of the flow, and -serve / -pull returned earlier.
+	replMode := *flagPrompt == "" && !*flagTranscript
+	if replMode && resolveModelDir() == "" {
+		runFirstRun(ctxBg(), bufio.NewReader(os.Stdin))
 	}
 
 	// Startup probe — mirrors gmitllm's modelBackend(): fail fast with a
