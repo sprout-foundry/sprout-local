@@ -377,12 +377,23 @@ func SelectModelForRAM(modelsRoot string, ramBytes uint64) (*CatalogModel, error
 		}
 	}
 
-	order := make([]int, 0, suggestedIdx+2)
-	for i := suggestedIdx; i >= 0; i-- {
+	// Walk order: the suggested tier first, then eligible (smaller) tiers
+	// largest-to-smallest, then every stretch tier smallest-to-largest.
+	// All non-blocked tiers are tried — with several always-fitting entries
+	// in the catalog, walking only suggestedIdx+1 for the stretch step can
+	// skip an installed model a tier further up (e.g. a machine with only a
+	// qwen3.5-4b tuned variant installed, at 8GB, once a second 0-RAM
+	// catalog entry occupies the +1 slot: the old walk returned "nothing
+	// fits" despite a perfectly fitting installed model).
+	order := make([]int, 0, len(tiered))
+	order = append(order, suggestedIdx)
+	for i := suggestedIdx - 1; i >= 0; i-- {
 		order = append(order, i)
 	}
-	if suggestedIdx+1 < len(tiered) {
-		order = append(order, suggestedIdx+1)
+	for i := suggestedIdx + 1; i < len(tiered); i++ {
+		if tiered[i].Status == TierStretch {
+			order = append(order, i)
+		}
 	}
 
 	for _, i := range order {

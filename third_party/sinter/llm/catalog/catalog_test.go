@@ -11,7 +11,9 @@ const testGB = 1024 * 1024 * 1024
 // TestSelectModelForRAM checks auto-selection picks the largest installed,
 // fitting SUGGESTED model — never a risky stretch pick. Stretch models are
 // only reachable via explicit user selection (SelectableForRAM), not
-// automatic RAM-based resolution.
+// automatic RAM-based resolution... except as graceful degradation: when
+// NOTHING at or below the suggested tier is installed, the walk may use a
+// fitting installed stretch model rather than fail outright.
 func TestSelectModelForRAM(t *testing.T) {
 	root := t.TempDir()
 	for _, d := range []string{"gemma-4-e2b-it-5bit", "qwen3.5-4b-4bit", "qwen3.5-9b-4bit"} {
@@ -44,6 +46,32 @@ func TestSelectModelForRAM(t *testing.T) {
 				t.Fatalf("got %s, want %s", filepath.Base(m.Dir), tc.want)
 			}
 		})
+	}
+}
+
+// TestSelectModelForRAMStretchOnlyInstalled guards the graceful-degradation
+// path: a machine with ONLY a stretch-tier model installed still gets it
+// picked (over an outright error), and — since the minicpm5-2b catalog
+// addition — the walk must reach stretch tiers beyond suggestedIdx+1: at
+// 8GB with only a qwen3.5-4b tuned variant installed, the +1 slot belongs
+// to minicpm5-2b (not installed), and the old two-step walk gave up even
+// though a fitting model was present.
+func TestSelectModelForRAMStretchOnlyInstalled(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "qwen3.5-4b-sprout-tuned-mlx-q5")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := SelectModelForRAM(root, 8*testGB)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if filepath.Base(m.Dir) != "qwen3.5-4b-sprout-tuned-mlx-q5" {
+		t.Fatalf("got %s, want the installed tuned 4b variant", filepath.Base(m.Dir))
 	}
 }
 
