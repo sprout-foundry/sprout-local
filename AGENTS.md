@@ -137,6 +137,10 @@ The Makefile selects the sinter backend per platform:
   On Termux, the Makefile points `CGO_CFLAGS`/`CGO_LDFLAGS` at `$PREFIX`
   (sinter's cgo directives hardcode `/usr/local`), where `libggml`/`libggml-base` live.
 
+Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which
+builds darwin/linux × arm64/amd64 tarballs + `SHA256SUMS` and publishes
+them for `scripts/install.sh` (the one-line curl install).
+
 **`third_party/sinter`** — a local copy of sinter v0.1.1 wired via `replace`
 in go.mod. It carries local patches because upstream v0.1.1/v0.1.2 cannot
 compile on Linux+GGML (undefined `compiledDecode` in `llm/qwen35`; the

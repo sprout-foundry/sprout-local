@@ -14,6 +14,31 @@ of helper tools. Chat-first — not a coding agent.
 - **One binary.** `sprout-local` chats in the terminal; `-serve` hosts a
   web chat UI and an OpenAI-compatible endpoint.
 
+## Install
+
+One line (macOS, Apple Silicon or Intel; Linux builds included):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sprout-foundry/sprout-local/main/scripts/install.sh | sh
+```
+
+Pin a version, or override install location:
+
+```bash
+SPROUT_LOCAL_VERSION=v0.1.0 curl -fsSL …/install.sh | sh
+```
+
+The script downloads the release tarball for your platform, verifies the
+SHA256, and installs to `~/.local/bin` (`/usr/local/bin` when run as
+root). Add `~/.local/bin` to your PATH if it isn't already.
+
+Build from source instead:
+
+```bash
+git clone https://github.com/sprout-foundry/sprout-local.git
+cd sprout-local && make build && make install
+```
+
 ## Running
 
 ```bash
@@ -91,10 +116,15 @@ See `AGENTS.md` for the file map and design decisions.
 ## Building
 
 ```bash
-make build   # ./sprout-local (MLX on macOS; -tags ggml on Linux)
+make build    # ./sprout-local (MLX on macOS; -tags ggml on Linux)
 make test
-make install # symlink into ~/.local/bin
+make install  # symlink into ~/.local/bin
 ```
+
+Releases: push a `v*` tag — `.github/workflows/release.yml` builds
+darwin/linux × arm64/amd64 tarballs plus a `SHA256SUMS` manifest and
+publishes them to the GitHub Release, which `scripts/install.sh`
+consumes for the one-line install.
 
 `third_party/sinter` vendors a patched sinter (linux+ggml fix,
 `llm/qwen35/compiled_stub.go`); drop it once upstream releases the fix.

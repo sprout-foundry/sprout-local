@@ -1,0 +1,85 @@
+# Release pipeline: tagged builds -> GitHub Release with per-platform
+# tarballs + SHA256SUMS. The install.sh one-liner consumes exactly these
+# assets, so asset names are part of the contract:
+#   sprout-local-{darwin|linux}-{amd64|arm64}.tar.gz
+#   SHA256SUMS
+#
+# cgo note: sinter needs cgo on every platform (MLX on macOS, GGML on
+# Linux). The macos-latest runner covers darwin arm64+amd64 natively;
+# ubuntu-latest covers linux amd64+arm64 via cross-compile (arm64 linux
+# requires libggml at runtime, not build time — cgo cross-compile works
+# because the build tags stub the GPU backend when libggml headers are
+# absent... if the linux build fails, pin ubuntu-24.04 and apt-get
+# install libggml-dev libggml-base-dev first).
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64, runner: macos-latest }
+          - { goos: darwin, goarch: amd64, runner: macos-latest }
+          - { goos: linux,  goarch: arm64, runner: ubuntu-latest }
+          - { goos: linux,  goarch: amd64, runner: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '1'
+        run: |
+          go build -o "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}" .
+
+      - name: Package
+        run: |
+          tar -czf "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
+            "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          shasum -a 256 sprout-local-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/sprout-local-*.tar.gz
+            dist/SHA256SUMS
