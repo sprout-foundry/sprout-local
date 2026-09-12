@@ -56,6 +56,33 @@ func init() {
 	}
 }
 
+// vocabHasMultiDigitToken reports whether the vocab contains a merged
+// multi-digit token ("12" or "123" as a single entry). Under Qwen's
+// single-digit pre-split such tokens are unreachable, so their presence
+// identifies the \p{N}{1,3} grouped digit split (MiniCPM5, Llama-3 style).
+// Excludes multi-digit-looking tokens that are genuinely reachable under a
+// single-digit split: tokens containing non-digit characters ("Ġ123") are
+// never produced by a digit-only regex either, but merged number+letter
+// tokens can't appear either, so any pure-digit 2-3 char token is decisive.
+func vocabHasMultiDigitToken(vocab map[string]int) bool {
+	for word := range vocab {
+		if len(word) < 2 || len(word) > 3 {
+			continue
+		}
+		allDigits := true
+		for _, r := range word {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
+}
+
 // qwenPreTokenize splits text into byte-level-encoded pre-tokens following
 // the Qwen tokenizer.json Split regex:
 //
@@ -65,7 +92,15 @@ func init() {
 // Alternatives are tried in order at each position (leftmost-first). Each
 // returned segment is already mapped through qwenByteEncoder.
 func qwenPreTokenize(text string) []string {
-	segs := qwenSplit(text)
+	return qwenPreTokenizeMode(text, false)
+}
+
+// qwenPreTokenizeMode is qwenPreTokenize with the digit-split mode:
+// digitGroup=false matches Qwen's `\p{N}` (one digit per pre-token);
+// digitGroup=true matches the `\p{N}{1,3}` split used by MiniCPM5 and
+// Llama-3-family vocabularies (up to three digits per pre-token).
+func qwenPreTokenizeMode(text string, digitGroup bool) []string {
+	segs := qwenSplitMode(text, digitGroup)
 	out := make([]string, len(segs))
 	for i, seg := range segs {
 		out[i] = qwenByteEncode(seg)
@@ -91,6 +126,12 @@ func isQwenWS(r rune) bool { return unicode.IsSpace(r) }
 // alternative is a try* function returning the matched segment and the next
 // position; the first that matches wins (regex alternation order).
 func qwenSplit(s string) []string {
+	return qwenSplitMode(s, false)
+}
+
+// qwenSplitMode is qwenSplit with the digit-split mode (see
+// qwenPreTokenizeMode).
+func qwenSplitMode(s string, digitGroup bool) []string {
 	r := []rune(s)
 	var out []string
 	i := 0
@@ -105,7 +146,7 @@ func qwenSplit(s string) []string {
 			i = ni
 			continue
 		}
-		if seg, ni, ok := tryDigit(r, i); ok {
+		if seg, ni, ok := tryDigit(r, i, digitGroup); ok {
 			out = append(out, seg)
 			i = ni
 			continue
@@ -175,12 +216,21 @@ func tryLetters(r []rune, i int) (string, int, bool) {
 	return string(r[i:k]), k, true
 }
 
-// tryDigit matches \p{N} — exactly one digit.
-func tryDigit(r []rune, i int) (string, int, bool) {
-	if unicode.IsNumber(r[i]) {
+// tryDigit matches the digit alternative. digitGroup=false: `\p{N}` —
+// exactly one digit (Qwen). digitGroup=true: `\p{N}{1,3}` — up to three
+// digits (MiniCPM5 / Llama-3-style vocabularies).
+func tryDigit(r []rune, i int, digitGroup bool) (string, int, bool) {
+	if !unicode.IsNumber(r[i]) {
+		return "", i, false
+	}
+	if !digitGroup {
 		return string(r[i]), i + 1, true
 	}
-	return "", i, false
+	k := i
+	for k < len(r) && k-i < 3 && unicode.IsNumber(r[k]) {
+		k++
+	}
+	return string(r[i:k]), k, true
 }
 
 // tryPunct matches ` ?[^\s\p{L}\p{N}]+[\r\n]*` — an optional literal space,

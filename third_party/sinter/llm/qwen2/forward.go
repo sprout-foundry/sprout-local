@@ -11,6 +11,13 @@
 //   - SwiGLU feed-forward network
 //   - RMSNorm (no bias on linear layers)
 //   - Tied word embeddings (lm_head shares embed_tokens weight)
+//
+// The same implementation also serves the Llama architecture
+// (model_type "llama", e.g. MiniCPM5): Llama is Qwen2 minus attention
+// biases, with untied embeddings (tie_word_embeddings=false) and a
+// separate lm_head — both already handled generically by this package
+// (SetBias is a no-op when no *.bias tensors exist; the untied lm_head
+// path loads lm_head.weight when tie_word_embeddings=false).
 package qwen2
 
 import (
@@ -24,6 +31,7 @@ import (
 
 func init() {
 	llm.RegisterArchitecture("qwen2", New)
+	llm.RegisterArchitecture("llama", New)
 }
 
 type Qwen2 struct {

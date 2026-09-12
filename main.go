@@ -137,6 +137,7 @@ func main() {
 		// Select the freshly pulled model for this run.
 		os.Setenv("SPROUT_LOCAL_MODEL_DIR", dest)
 	}
+
 	// -m override: applied before the model loads. resolveModelDir reads the
 	// env var, so we set it for this process.
 	if *flagModelDir != "" {
@@ -446,25 +447,37 @@ func logTurn(st *replState, userLine, reply string) {
 	appendLog("assistant", st.model, st.systemPrompt, "", reply)
 }
 
-// toolStreamFilter suppresses <tool_call>…</tool_call> blocks from the
-// streamed display while the raw text still accumulates for parsing.
-// Without tools enabled it is a pass-through. Clean deltas go to both the
-// terminal printer and (optionally) seed's stream handler, so the agent's
-// content buffer matches what the user saw. Implementation: hold back a
-// tag-sized tail of the stream, watch for "<tool_call>"; once seen, go
-// silent until the matching "</tool_call>" has passed. Text after the
-// block (a preamble or follow-up prose) flows again normally.
+// toolStreamFilter suppresses tool-call markup from the streamed display
+// while the raw text still accumulates for parsing. Without tools enabled
+// it is a pass-through. Clean deltas go to both the terminal printer and
+// (optionally) seed's stream handler, so the agent's content buffer
+// matches what the user saw. Implementation: hold back a tag-sized tail of
+// the stream, watch for an opening tag (<tool_call> for the qwen protocol,
+// <function name=" for MiniCPM5); once seen, go silent until the matching
+// close has passed. Text after the block flows again normally.
 type toolStreamFilter struct {
 	printer *streamPrinter // terminal display (may be nil)
 	onDelta func(string)   // seed stream handler feed (may be nil)
 	tools   bool
 	tail    string // held-back characters not yet emitted
-	inCall  bool   // inside a <tool_call> block
+	inCall  bool   // inside a tool-call block
+	// protocol selects the markup pair ("qwen" default, "minicpm5").
+	protocol string
 }
 
 const toolCallTag = "<tool_call>"
 const toolCallTagEnd = "</tool_call>"
+const miniCPM5CallTag = "<function name=\""
+const miniCPM5CallTagEnd = "</function>"
 const streamHoldback = len(toolCallTag) + 8 // tag + slack for split spans
+
+// streamTags returns the (open, close) markup pair for the active protocol.
+func (f *toolStreamFilter) streamTags() (string, string) {
+	if f.protocol == "minicpm5" {
+		return miniCPM5CallTag, miniCPM5CallTagEnd
+	}
+	return toolCallTag, toolCallTagEnd
+}
 
 // emit fans a clean delta out to the terminal and the agent's buffer.
 func (f *toolStreamFilter) emit(s string) {
@@ -484,10 +497,11 @@ func (f *toolStreamFilter) write(delta string) {
 		f.emit(delta)
 		return
 	}
+	openTag, closeTag := f.streamTags()
 	f.tail += delta
 	for {
 		if f.inCall {
-			end := strings.Index(f.tail, toolCallTagEnd)
+			end := strings.Index(f.tail, closeTag)
 			if end < 0 {
 				// Keep only a holdback in case the closing tag is split.
 				if len(f.tail) > streamHoldback {
@@ -495,11 +509,11 @@ func (f *toolStreamFilter) write(delta string) {
 				}
 				return
 			}
-			f.tail = f.tail[end+len(toolCallTagEnd):]
+			f.tail = f.tail[end+len(closeTag):]
 			f.inCall = false
 			continue
 		}
-		start := strings.Index(f.tail, toolCallTag)
+		start := strings.Index(f.tail, openTag)
 		if start < 0 {
 			// No opening tag in the buffer: emit all but the holdback.
 			if len(f.tail) > streamHoldback {
@@ -512,7 +526,7 @@ func (f *toolStreamFilter) write(delta string) {
 		if start > 0 {
 			f.emit(f.tail[:start])
 		}
-		f.tail = f.tail[start+len(toolCallTag):]
+		f.tail = f.tail[start+len(openTag):]
 		f.inCall = true
 	}
 }

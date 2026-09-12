@@ -21,6 +21,13 @@ type Tokenizer struct {
 	eosID    int
 	padID    int
 	spaceTok string
+	// digitGroup enables the \p{N}{1,3} digit pre-split (MiniCPM5 /
+	// Llama-3-style) instead of Qwen's single-digit split. Set at load from
+	// the vocab shape — see LoadTokenizer. Exposed via DigitGroupEnabled.
+	digitGroup bool
+	// miniCPM5Stop marks a MiniCPM5 vocab: Model load adds </s> (id 1) as
+	// an extra stop token — see LoadTokenizer and NewModel.
+	miniCPM5Stop bool
 	// specialTokens maps every added token (atomic, not BPE-decomposed) to its
 	// ID. HuggingFace registers all added_tokens as single units regardless of
 	// the Special flag — <think>/</think> are added but not Special, and must
@@ -110,6 +117,21 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		}
 	}
 
+	// Digit-split mode: some byte-level BPE vocabularies (MiniCPM5, and
+	// recent Llama-3-family exports) pre-split digit runs into groups of
+	// at most 3 (`\p{N}{1,3}`) before the main regex; Qwen uses single
+	// digits (`\p{N}`). Detect from the vocab: a 2-3 digit merged token
+	// ("123" as one vocab entry) can only be reachable under the grouped
+	// split, since the single-digit regex never feeds multi-digit pre-tokens.
+	tok.digitGroup = vocabHasMultiDigitToken(tok.vocab)
+
+	// MiniCPM5: </s> (id 1) is a hard stop in addition to the chat
+	// terminator <|im_end|> — the model emits both when it ends a turn
+	// (observed: "```</s></s>" on greedy runs).
+	if tok.isMiniCPM5() {
+		tok.miniCPM5Stop = true
+	}
+
 	// Fallbacks
 	if tok.bosID == 0 {
 		tok.bosID = -1 // no BOS
@@ -188,8 +210,9 @@ func (t *Tokenizer) encodeBPE(text string) []int {
 	}
 	// Qwen/GPT-2 byte-level: split via the HF pre-tokenizer regex (which
 	// keeps newline runs standalone — see qwen_pretok.go) and byte-encode
-	// each segment before BPE.
-	words := qwenPreTokenize(text)
+	// each segment before BPE. digitGroup vocabularies (MiniCPM5,
+	// Llama-3-style) pre-split digit runs into groups of up to 3 digits.
+	words := qwenPreTokenizeMode(text, t.digitGroup)
 	var tokenIDs []int
 	for _, word := range words {
 		tokens := t.bpe(word)
@@ -591,7 +614,57 @@ func (t *Tokenizer) FormatChat(messages []ChatMessage) string {
 	if _, isGemma := t.vocab["<|turn>"]; isGemma {
 		return t.formatGemmaChat(messages)
 	}
+	// MiniCPM5 shares the <|im_start|>/<|im_end|> wrapper but its reference
+	// template appends a bare newline after the assistant cue, not an empty
+	// think block (see Model.FormatChatForModel).
+	if t.isMiniCPM5() {
+		return t.formatMiniCPM5Chat(messages)
+	}
 	return t.formatQwenChat(messages)
+}
+
+// isMiniCPM5 reports whether this vocab is MiniCPM5's: a byte-level BPE with
+// the <|im_start|>/<|im_end|> chat markers (like Qwen) plus MiniCPM5's
+// distinctive /think //no_think control tokens.
+func (t *Tokenizer) isMiniCPM5() bool {
+	if t.sentencePiece {
+		return false
+	}
+	if _, ok := t.vocab["<|im_start|>"]; !ok {
+		return false
+	}
+	_, hasThink := t.specialTokens["/think"]
+	_, hasNoThink := t.specialTokens["/no_think"]
+	return hasThink && hasNoThink
+}
+
+// formatMiniCPM5Chat renders MiniCPM5's chat format: <|im_start|>role\n…<|im_end|>
+// per message, assistant turns carrying an empty <think>\n\n</think>\n\n
+// block in history (matching the reference template), and the generation
+// cue being <|im_start|>assistant\n plus one extra newline.
+//
+// The extra newline matters: HF's pre-tokenizer merges a multi-newline tail
+// into one Ċ-run token (assistant\n\n → 'assistant' + 'ĊĊ'), and the model
+// is trained on that framing. A single trailing 'Ċ' reads as "turn over" —
+// the model answers with <|im_end|> and generation stops immediately —
+// while the 'ĊĊ' run reads as "start of the assistant body" and it answers.
+func (t *Tokenizer) formatMiniCPM5Chat(messages []ChatMessage) string {
+	return t.formatMiniCPM5Body(messages) + "<|im_start|>assistant\n\n\n"
+}
+
+func (t *Tokenizer) formatMiniCPM5Body(messages []ChatMessage) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		sb.WriteString("<|im_start|>")
+		sb.WriteString(msg.Role)
+		sb.WriteString("\n")
+		if msg.Role == "assistant" {
+			sb.WriteString("<think>\n\n</think>\n\n")
+		}
+		sb.WriteString(msg.Content)
+		sb.WriteString("<|im_end|>\n")
+	}
+	return sb.String()
 }
 
 // FormatChatPrefix renders messages the same way FormatChat does, but
@@ -607,6 +680,9 @@ func (t *Tokenizer) FormatChatPrefix(messages []ChatMessage) string {
 	}
 	if _, isGemma := t.vocab["<|turn>"]; isGemma {
 		return t.formatGemmaBody(messages)
+	}
+	if t.isMiniCPM5() {
+		return t.formatMiniCPM5Body(messages)
 	}
 	return t.formatQwenBody(messages)
 }
@@ -715,6 +791,11 @@ func (t *Tokenizer) IDOf(content string) int {
 // model actually emits).
 func (t *Tokenizer) EOSID() int { return t.eosID }
 
+// DigitGroupEnabled reports whether this vocabulary uses the \p{N}{1,3}
+// grouped digit pre-split (MiniCPM5 / Llama-3 style) instead of Qwen's
+// single-digit split. Exported for tests.
+func (t *Tokenizer) DigitGroupEnabled() bool { return t.digitGroup }
+
 // multimodalTokenIDs returns IDs of modality-placeholder tokens — the
 // image/audio/video entries a multimodal checkpoint's vocab carries that a
 // text-only decode loop can never legitimately emit (<image_pad|>,
@@ -729,7 +810,11 @@ func (t *Tokenizer) multimodalTokenIDs() map[int]bool {
 		if strings.Contains(lower, "image") ||
 			strings.Contains(lower, "audio") ||
 			strings.Contains(lower, "video") ||
-			strings.Contains(lower, "vision") {
+			strings.Contains(lower, "vision") ||
+			// MiniCPM5's control tokens <｜tool_call｜>-style markers use
+			// fullwidth vertical-bar decorations on tokens that are
+			// internal protocol delimiters, not user-visible text.
+			(strings.Contains(lower, "｜") && strings.Contains(lower, "message")) {
 			banned[id] = true
 		}
 	}

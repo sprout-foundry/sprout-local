@@ -17,5 +17,6 @@ func modelBackend() (engine, model string) {
 	if _, err := loadSinterModel(); err != nil {
 		log.Fatalf("Sinter failed to load %s: %v", dir, err)
 	}
+	setSessionModelProtocol(dir)
 	return "sinter", dir
 }

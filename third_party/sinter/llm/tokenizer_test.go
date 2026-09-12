@@ -119,3 +119,82 @@ func TestFormatLFM2Chat_HistoryReplayMatchesGeneration(t *testing.T) {
 		t.Fatalf("turn-2 prompt is not an exact prefix extension of turn-1 prompt (breaks KV prefix-cache reuse)\nturn1=%q\nturn2=%q", prompt1, prompt2)
 	}
 }
+
+// TestVocabHasMultiDigitToken pins the digit-split detection: a vocab with
+// merged 2-3 digit tokens ("12", "123") uses the \p{N}{1,3} pre-split
+// (MiniCPM5 / Llama-3 style); a Qwen vocab with only single-digit entries
+// does not.
+func TestVocabHasMultiDigitToken(t *testing.T) {
+	with := map[string]int{"hello": 0, "12": 1, "123": 2}
+	if !vocabHasMultiDigitToken(with) {
+		t.Fatal("merged digit tokens present but not detected")
+	}
+	qwen := map[string]int{"hello": 0, "1": 1, "2": 2, "Ġ12": 3}
+	if vocabHasMultiDigitToken(qwen) {
+		t.Fatal("single-digit vocab flagged as digitGroup")
+	}
+}
+
+// TestQwenPreTokenizeDigitGroup pins the \p{N}{1,3} digit split used by
+// MiniCPM5: digit runs chunk into groups of up to 3 before BPE, matching
+// HF's Split("\p{N}{1,3}") pretokenizer. Byte-level-encoded segments shown.
+func TestQwenPreTokenizeDigitGroup(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"2026", []string{"202", "6"}},
+		{"12345", []string{"123", "45"}},
+		{"42", []string{"42"}},
+		{"v1.2.3", []string{"v", "1", ".", "2", ".", "3"}},
+		{"a 1234 b", []string{"a", "Ġ", "123", "4", "Ġb"}},
+	}
+	for _, tc := range cases {
+		got := qwenPreTokenizeMode(tc.in, true)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("qwenPreTokenizeMode(%q, digitGroup)\n  got  %v\n  want %v", tc.in, got, tc.want)
+		}
+	}
+	// single-digit mode unchanged
+	if got := qwenPreTokenizeMode("2026", false); !reflect.DeepEqual(got, []string{"2", "0", "2", "6"}) {
+		t.Errorf("digitGroup=false should split single digits, got %v", got)
+	}
+}
+
+// TestMiniCPM5ChatTemplate pins the MiniCPM5 chat rendering: the generation
+// cue is <|im_start|>assistant\n + a bare newline (NOT a closed think
+// block — an empty think prefix makes the model answer with <|im_end|>
+// immediately), while history assistant turns carry the empty think block.
+// History-replay prefix property must hold for KV-cache reuse.
+func TestMiniCPM5ChatTemplate(t *testing.T) {
+	tok := &Tokenizer{
+		vocab:         map[string]int{"/think": 1, "/no_think": 2, "<|im_start|>": 3},
+		specialTokens: map[string]int{"/think": 1, "/no_think": 2, "<|im_start|>": 3},
+	}
+	if !tok.isMiniCPM5() {
+		t.Fatal("MiniCPM5 vocab not detected")
+	}
+	turn1 := []ChatMessage{
+		{Role: "system", Content: "Be concise."},
+		{Role: "user", Content: "hi"},
+	}
+	p1 := tok.formatMiniCPM5Chat(turn1)
+	want := "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n\n\n"
+	if p1 != want {
+		t.Fatalf("generation cue mismatch:\n got %q\nwant %q", p1, want)
+	}
+
+	turn2 := append(turn1,
+		ChatMessage{Role: "assistant", Content: "Hello."},
+		ChatMessage{Role: "user", Content: "more"},
+	)
+	p2 := tok.formatMiniCPM5Chat(turn2)
+	// The trailing "ĊĊ-run" cue is replaced in history by the empty think
+	// block + content; the shared prefix ends right after the assistant cue.
+	if !strings.HasPrefix(p2, p1[:len(p1)-2]) {
+		t.Fatalf("turn-2 prompt does not extend turn-1 prompt (breaks KV prefix-cache reuse)\np1=%q\np2=%q", p1, p2)
+	}
+	if !strings.Contains(p2, "<|im_start|>assistant\n<think>\n\n</think>\n\nHello.") {
+		t.Fatal("history assistant turn missing the empty think block")
+	}
+}

@@ -171,9 +171,21 @@ func (m *Model) maxPrefixSlots() int {
 
 // NewModel creates a Model from a HuggingFace model directory containing
 // config.json, model.safetensors, and tokenizer.json. The architecture is
-// auto-detected from config.json.
+// auto-detected from config.json and the backend is auto-detected.
 func NewModel(modelDir string) (*Model, error) {
 	backend := tensor.DetectBackend()
+	if backend == nil || !backend.Available() {
+		return nil, fmt.Errorf("llm: no GPU backend available")
+	}
+	return NewModelWithBackend(modelDir, backend)
+}
+
+// NewModelWithBackend is NewModel with an explicit backend choice, for
+// callers that need a specific backend regardless of detection order —
+// notably cross-backend parity tests, which load the same model on each
+// registered backend and compare outputs. The backend must be registered
+// and available.
+func NewModelWithBackend(modelDir string, backend tensor.Backend) (*Model, error) {
 	if backend == nil || !backend.Available() {
 		return nil, fmt.Errorf("llm: no GPU backend available")
 	}
@@ -210,6 +222,12 @@ func NewModel(modelDir string) (*Model, error) {
 	// the model actually emits.
 	if cfg.EOSTokenID <= 0 || tok.EOSID() > 0 {
 		cfg.EOSTokenID = tok.EOSID()
+	}
+	// MiniCPM5 emits </s> (id 1) as a hard stop alongside <|im_end|>;
+	// without it in StopTokenIDs, greedy runs surface literal "</s>"
+	// fragments in the output.
+	if tok.miniCPM5Stop {
+		cfg.StopTokenIDs = append(cfg.StopTokenIDs, 1)
 	}
 	log.Printf("llm: resolved EOSTokenID=%d (tokenizer EOSID=%d, config.json eos_token_id raw pre-fallback logged above if mismatched)", cfg.EOSTokenID, tok.EOSID())
 
@@ -275,6 +293,9 @@ func NewModelFromFiles(modelPath, configPath, tokenizerPath string) (*Model, err
 	// tokenizer detects even when config.json's eos_token_id is endoftext.
 	if cfg.EOSTokenID <= 0 || tok.EOSID() > 0 {
 		cfg.EOSTokenID = tok.EOSID()
+	}
+	if tok.miniCPM5Stop {
+		cfg.StopTokenIDs = append(cfg.StopTokenIDs, 1)
 	}
 
 	// Pin to this OS thread for the whole load; see NewModel for why.
@@ -1121,9 +1142,35 @@ func (m *Model) TokenizerEncode(text string) []int {
 	return m.tokenizer.Encode(text)
 }
 
+// EncodeIDs exposes raw text→token-ID encoding without a loaded model
+// (prompt-cache warmup, deterministic tests, tools that only need the
+// tokenizer).
+func EncodeIDs(tokenizerPath, text string) ([]int, error) {
+	tok, err := LoadTokenizer(tokenizerPath)
+	if err != nil {
+		return nil, err
+	}
+	return tok.Encode(text), nil
+}
+
 // FormatChat applies the chat template to a list of messages, producing the
 // raw prompt string fed to the model.
 func (m *Model) FormatChat(messages []ChatMessage) string {
+	return m.tokenizer.FormatChat(messages)
+}
+
+// FormatChatForModel renders messages with the template variant that matches
+// the loaded model's own chat template. Qwen-family generation cues append an
+// empty <think>\n\n</think>\n\n block ("answer directly"); MiniCPM5's
+// reference template instead appends a bare newline after
+// <|im_start|>assistant — its vocab reaches for that newline first (verified:
+// argmax from the bare cue is token 220 "Ċ"), and a pre-filled empty think
+// block makes it answer with nothing (first token = <|im_end|>). Callers that
+// don't have a model instance yet can use Tokenizer.FormatChat.
+func (m *Model) FormatChatForModel(messages []ChatMessage) string {
+	if m.tokenizer != nil && m.tokenizer.isMiniCPM5() {
+		return m.tokenizer.formatMiniCPM5Chat(messages)
+	}
 	return m.tokenizer.FormatChat(messages)
 }
 

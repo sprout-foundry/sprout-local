@@ -1,6 +1,6 @@
 // Package all registers every model architecture shipped with sinter
-// (qwen2, qwen3, qwen3.5 dense + MoE, gemma4, lfm2) plus the MLX (Metal)
-// and GGML tensor backends.
+// (qwen2, llama, qwen3, qwen3.5 dense + MoE, gemma4, lfm2) plus the MLX
+// (Metal) and GGML tensor backends.
 //
 // Import it blank when you just want everything to work:
 //
@@ -15,7 +15,7 @@ package all
 import (
 	_ "github.com/sprout-foundry/sinter/llm/gemma4"
 	_ "github.com/sprout-foundry/sinter/llm/lfm2"
-	_ "github.com/sprout-foundry/sinter/llm/qwen2"
+	_ "github.com/sprout-foundry/sinter/llm/qwen2" // qwen2 + llama (MiniCPM5, Llama-family)
 	_ "github.com/sprout-foundry/sinter/llm/qwen3"
 	_ "github.com/sprout-foundry/sinter/llm/qwen35"
 	_ "github.com/sprout-foundry/sinter/mlx"

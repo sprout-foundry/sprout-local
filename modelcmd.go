@@ -54,6 +54,7 @@ func handleModelCommand(ref string, active *string) {
 	}
 	evictModels(residentLimit(), dir)
 	*active = dir
+	setSessionModelProtocol(dir)
 	fmt.Printf("Switched to %s — history kept; /new starts fresh.\n", filepath.Base(dir))
 }
 
@@ -84,6 +85,7 @@ func handlePullCommand(name string, active *string) {
 	}
 	evictModels(residentLimit(), dest)
 	*active = dest
+	setSessionModelProtocol(dest)
 	fmt.Printf("Switched to %s.\n", filepath.Base(dest))
 
 	printer := stdoutPrinter()

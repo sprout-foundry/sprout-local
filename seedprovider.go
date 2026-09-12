@@ -43,6 +43,8 @@ type sinterProvider struct {
 	display     func(string)
 	displayMode mdMode // styled (terminal) or raw (web socket)
 	chatCount   int    // generations this turn (iteration boundary detection)
+	// protocolName caches the model's tool protocol ("qwen" or "minicpm5").
+	protocolName string
 	// onIterationBoundary, when set, is called before each generation
 	// after the first in a multi-step turn — the web UI starts a new
 	// bubble per assistant message so tool chips interleave in order.
@@ -52,6 +54,15 @@ type sinterProvider struct {
 // newSinterProvider builds a provider for the given model directory.
 func newSinterProvider(modelDir string) *sinterProvider {
 	return &sinterProvider{modelDir: modelDir}
+}
+
+// protocol returns the tool protocol for this provider's model directory,
+// resolved lazily (first call) and cached. Defaults to "qwen".
+func (p *sinterProvider) protocol() string {
+	if p.protocolName == "" {
+		p.protocolName = toolProtocolForModelDir(p.modelDir)
+	}
+	return p.protocolName
 }
 
 // SetDisplay wires (or clears, nil) the terminal delta sink.
@@ -124,16 +135,16 @@ func (p *sinterProvider) chat(ctx context.Context, req *core.ChatRequest, handle
 	p.chatCount++
 
 	toolsOn := len(req.Tools) > 0
-	msgs := renderSeedMessages(req.Messages)
+	msgs := renderSeedMessagesFor(req.Messages, p.protocol())
 	if toolsOn {
-		msgs = appendToolPrompt(msgs, req.Tools)
+		msgs = appendToolPromptFor(msgs, req.Tools, p.protocol())
 	}
 
 	var display *streamPrinter
 	if p.display != nil {
 		display = newStreamPrinterFunc(p.display, p.displayMode)
 	}
-	filter := &toolStreamFilter{tools: toolsOn, printer: display}
+	filter := &toolStreamFilter{tools: toolsOn, printer: display, protocol: p.protocol()}
 	if handler != nil {
 		filter.onDelta = handler.OnContent
 	}
@@ -151,7 +162,7 @@ func (p *sinterProvider) chat(ctx context.Context, req *core.ChatRequest, handle
 	}
 
 	text := hygieneAll(raw)
-	plain, calls := extractToolCalls(text)
+	plain, calls := extractToolCallsFor(text, p.protocol())
 	plain = strings.TrimSpace(plain)
 
 	// A guard stop or a plain-prose spiral is final: mid-word/looping text
@@ -239,11 +250,16 @@ func finishReason(calls []parsedToolCall) string {
 }
 
 // renderSeedMessages converts seed messages into sinter ChatMessages.
-// Assistant tool_calls become the model's native <tool_call> markup (so
+// Assistant tool_calls become the model's native tool-call markup (so
 // the history looks exactly like what the model itself emits), and tool
 // results are wrapped in <tool_response> inside a user turn — mirroring
 // chat_template.jinja.
 func renderSeedMessages(msgs []core.Message) []llm.ChatMessage {
+	return renderSeedMessagesFor(msgs, toolProtocol())
+}
+
+// renderSeedMessagesFor is renderSeedMessages with an explicit protocol.
+func renderSeedMessagesFor(msgs []core.Message, protocol string) []llm.ChatMessage {
 	out := make([]llm.ChatMessage, 0, len(msgs)+2)
 	for _, m := range msgs {
 		switch m.Role {
@@ -256,22 +272,35 @@ func renderSeedMessages(msgs []core.Message) []llm.ChatMessage {
 			for i, tc := range m.ToolCalls {
 				var args map[string]string
 				json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				content = renderToolCallText(tc.Function.Name, args, i == 0 && strings.TrimSpace(content) != "")
+				content = renderToolCallTextFor(tc.Function.Name, args, i == 0 && strings.TrimSpace(content) != "", protocol)
 			}
 			out = append(out, llm.ChatMessage{Role: "assistant", Content: content})
 		case "tool":
 			out = appendToolResult(out, m.Content)
 		}
 	}
-	// A turn ending in tool results leaves the model's turn open; qwen's
-	// template appends the assistant cue itself in formatQwenChat.
+	// A turn ending in tool results leaves the model's turn open; the
+	// template's generation cue (appended by sinter's FormatChat) closes it.
 	return out
+}
+
+// renderToolCallTextFor renders one tool call in the protocol's native markup.
+func renderToolCallTextFor(name string, args map[string]string, afterContent bool, protocol string) string {
+	if protocol == "minicpm5" {
+		return renderMiniCPM5ToolCallText(name, args, afterContent)
+	}
+	return renderToolCallText(name, args, afterContent)
 }
 
 // appendToolPrompt injects the "# Tools" block into the system message
 // (creating one if needed) from seed's structured tool list.
 func appendToolPrompt(msgs []llm.ChatMessage, tools []core.Tool) []llm.ChatMessage {
-	block := toolPromptBlockFromSeed(tools)
+	return appendToolPromptFor(msgs, tools, toolProtocol())
+}
+
+// appendToolPromptFor is appendToolPrompt with an explicit protocol.
+func appendToolPromptFor(msgs []llm.ChatMessage, tools []core.Tool, protocol string) []llm.ChatMessage {
+	block := toolPromptBlockFromSeedFor(tools, protocol)
 	if len(msgs) > 0 && msgs[0].Role == "system" {
 		msgs[0].Content = strings.TrimRight(msgs[0].Content, "\n") + "\n\n" + block
 		return msgs
@@ -281,6 +310,11 @@ func appendToolPrompt(msgs []llm.ChatMessage, tools []core.Tool) []llm.ChatMessa
 
 // toolPromptBlockFromSeed renders the # Tools block from seed Tool values.
 func toolPromptBlockFromSeed(tools []core.Tool) string {
+	return toolPromptBlockFromSeedFor(tools, toolProtocol())
+}
+
+// toolPromptBlockFromSeedFor is toolPromptBlockFromSeed with an explicit protocol.
+func toolPromptBlockFromSeedFor(tools []core.Tool, protocol string) string {
 	specs := make([]toolSpec, 0, len(tools))
 	for _, t := range tools {
 		params, _ := toolParamsFromSeed(t.Function.Parameters)
@@ -290,7 +324,7 @@ func toolPromptBlockFromSeed(tools []core.Tool) string {
 			parameters:  params,
 		})
 	}
-	return renderToolPromptBlock(specs)
+	return renderToolPromptBlockFor(specs, protocol)
 }
 
 // toolParamsFromSeed converts a seed parameters schema (interface{} carrying

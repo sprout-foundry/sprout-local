@@ -350,7 +350,18 @@ func eosTokenID(raw json.RawMessage) int {
 	// Try as array — take first element
 	var arr []int
 	if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
-		return arr[0]
+		// MiniCPM5-style arrays ([1, 130073]) list the plain </s> first and
+		// the chat terminator <|im_end|> second. The chat terminator is what
+		// generation actually hits, so prefer the largest element when the
+		// tokenizer doesn't override (Model load prefers tok.EOSID() when
+		// detected, which covers Qwen-style vocabs).
+		best := arr[0]
+		for _, v := range arr {
+			if v > best {
+				best = v
+			}
+		}
+		return best
 	}
 	return 0
 }

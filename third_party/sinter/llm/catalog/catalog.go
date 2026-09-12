@@ -46,8 +46,21 @@ type CatalogModel struct {
 var ModelCatalog = []CatalogModel{
 	{
 		Name:            "gemma4-e2b",
-		Dir:             "gemma-4-e2b-it-4bit",
-		HFRepo:          "mlx-community/gemma-4-e2b-it-4bit",
+		Dir:             "gemma-4-e2b-it-5bit",
+		HFRepo:          "mlx-community/gemma-4-e2b-it-5bit",
+		MinRAMSelect:    0,
+		MinRAMSuggested: 0,
+	},
+	{
+		// MiniCPM5-2B (OpenBMB): dense 2B LlamaForCausalLM, 128K context.
+		// Runs on sinter's "llama" arch (qwen2 implementation — no QK norm,
+		// untied lm_head). Official OpenBMB MLX 4-bit export. Same tier as
+		// gemma4-e2b — a 2B 4-bit model fits on any machine — but ordered
+		// AFTER it so the existing suggested/eligible matrix is unchanged
+		// (equal MinRAMSuggested ties keep input order).
+		Name:            "minicpm5-2b",
+		Dir:             "minicpm5-2b-mlx",
+		HFRepo:          "openbmb/MiniCPM5-2B-MLX",
 		MinRAMSelect:    0,
 		MinRAMSuggested: 0,
 	},
@@ -113,15 +126,18 @@ type TieredModel struct {
 	Status TierStatus
 }
 
-// sortedCatalog returns ModelCatalog sorted by MinRAMSuggested ascending
-// (MaxUint64 entries — never-suggested, top-of-line models — sort last).
-// This defines the tier progression TieredCatalogForRAM walks: the order a
-// model becomes the suggested default is the same order it can ever be a
-// stretch pick for the tier below it.
+// sortedCatalog returns ModelCatalog sorted by MinRAMSuggested ascending,
+// ties broken by input order (stable) — MaxUint64 entries (never-suggested,
+// top-of-line models) sort last. The tie rule matters: models with
+// MinRAMSuggested 0 (fit anywhere) keep their listed order, so the first
+// entry stays the suggested default for small machines. This defines the
+// tier progression TieredCatalogForRAM walks: the order a model becomes the
+// suggested default is the same order it can ever be a stretch pick for the
+// tier below it.
 func sortedCatalog() []CatalogModel {
 	sorted := make([]CatalogModel, len(ModelCatalog))
 	copy(sorted, ModelCatalog)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].MinRAMSuggested < sorted[j].MinRAMSuggested })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].MinRAMSuggested < sorted[j].MinRAMSuggested })
 	return sorted
 }
 
@@ -136,13 +152,24 @@ func sortedCatalog() []CatalogModel {
 func TieredCatalogForRAM(ramBytes uint64) []TieredModel {
 	sorted := sortedCatalog()
 
-	suggestedIdx := 0
+	// The suggested pick is the entry with the LARGEST MinRAMSuggested that
+	// fits the RAM budget. When several entries share the winning threshold
+	// (e.g. multiple always-fitting small models), the FIRST of them wins —
+	// input order breaks ties, so the long-established default keeps its
+	// role and later same-tier entries become eligible alternatives.
+	suggestedIdx := -1
+	bestThreshold := uint64(0)
+	first := true
 	for i, m := range sorted {
-		if ramBytes >= m.MinRAMSuggested {
+		if ramBytes >= m.MinRAMSuggested && (first || m.MinRAMSuggested > bestThreshold) {
 			suggestedIdx = i
+			bestThreshold = m.MinRAMSuggested
+			first = false
 		}
 	}
-
+	if suggestedIdx == -1 {
+		suggestedIdx = 0 // smallest entry always fits
+	}
 	out := make([]TieredModel, len(sorted))
 	for i, m := range sorted {
 		status := TierBlocked
@@ -151,7 +178,12 @@ func TieredCatalogForRAM(ramBytes uint64) []TieredModel {
 			status = TierSuggested
 		case i < suggestedIdx:
 			status = TierEligible
-		case i == suggestedIdx+1 && ramBytes >= m.MinRAMSelect:
+		case ramBytes >= m.MinRAMSelect && m.MinRAMSelect != math.MaxUint64:
+			// Everything the machine can hold is at worst a stretch pick:
+			// i == suggestedIdx+1 (the classic one-up stretch) or a
+			// MinRAMSelect=0 model (fits everywhere — a warned alternative,
+			// shown as stretch rather than eligible because it ties with the
+			// suggested tier). Genuinely oversized models stay blocked.
 			status = TierStretch
 		}
 		out[i] = TieredModel{Model: m, Status: status}
