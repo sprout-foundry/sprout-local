@@ -13,7 +13,7 @@ import (
 // TestDecodeOutputCompare generates text with the proper chat template
 // to verify the fused kernels don't change model behavior.
 func TestDecodeOutputCompare(t *testing.T) {
-	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-4bit")
+	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-5bit")
 	if _, err := os.Stat(modelDir + "/model.safetensors"); err != nil {
 		t.Skip("model not found at", modelDir)
 	}

@@ -1153,6 +1153,11 @@ func EncodeIDs(tokenizerPath, text string) ([]int, error) {
 	return tok.Encode(text), nil
 }
 
+// DecodeTokenIDs converts a token-ID slice back to text (diagnostics).
+func (m *Model) DecodeTokenIDs(ids []int) string {
+	return m.tokenizer.Decode(ids)
+}
+
 // FormatChat applies the chat template to a list of messages, producing the
 // raw prompt string fed to the model.
 func (m *Model) FormatChat(messages []ChatMessage) string {

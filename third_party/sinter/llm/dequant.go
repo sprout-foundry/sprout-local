@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"os"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -153,12 +154,13 @@ func dequantizeToFull(b tensor.Backend, s tensor.Stream, w, scales, biases tenso
 	return dequantizeToQ4_0(b, s, w, scales, biases, bits, groupSize)
 }
 
-// Q4_0Quantizer is an optional backend capability for converting F32 weights
-// to GGML Q4_0 format at load time. This enables ARM-optimized quantized
-// matmul kernels (8x memory reduction vs F32, NEON/i8mm acceleration).
-// Backends that don't support it (MLX, stub) simply don't implement it.
-type Q4_0Quantizer interface {
+// GGMLQuantizer is an optional backend capability for converting F32 weights
+// to GGML native quantized formats at load time (Q8_0 by default, Q4_0
+// opt-in for memory-constrained machines). Quantized matmul kernels
+// dequantize on the fly (NEON/i8mm/Metal).
+type GGMLQuantizer interface {
 	NewArrayQ4_0(data []float32, shape []int) (tensor.Array, error)
+	NewArrayQ8_0(data []float32, shape []int) (tensor.Array, error)
 }
 
 // dequantizeToQ4_0 dequantizes MLX affine weights and re-quantizes to Q4_0
@@ -178,20 +180,47 @@ func dequantizeToQ4_0(b tensor.Backend, s tensor.Stream, w, scales, biases tenso
 		biases.Free()
 	}
 
-	// Q4_0 re-quantization: store weights in GGML's native quantized format
-	// so ggml_mul_mat uses the ARM-optimized NEON/i8mm kernels (~8x less
-	// memory than F32, fused dequant on the fly). Falls back to F32 if the
-	// backend doesn't implement Q4_0Quantizer.
-	if qz, ok := b.(Q4_0Quantizer); ok {
-		arr, err := qz.NewArrayQ4_0(f32Data, shape)
+	// GGML native requantization so ggml_mul_mat uses the optimized quantized
+	// kernels with fused dequant. Q8_0 is the default: requantizing 4/5-bit
+	// affine models to Q4_0 loses enough precision (compounded over dozens
+	// of layers) to break generation — Q8_0 error is negligible.
+	// SINTER_QUANT=q4_0 opts down for memory-constrained machines.
+	if qz, ok := b.(GGMLQuantizer); ok {
+		if os.Getenv("SINTER_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "[dequant] requant %v shape=%v bits=%d\n", os.Getenv("SINTER_QUANT"), shape, bits)
+		}
+		if os.Getenv("SINTER_QUANT") == "q4_0" {
+			arr, err := qz.NewArrayQ4_0(f32Data, shape)
+			runtime.GC()
+			return arr, err
+		}
+		if os.Getenv("SINTER_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "[dequant] calling NewArrayQ8_0 with %d floats\n", len(f32Data))
+		}
+		arr, err := qz.NewArrayQ8_0(f32Data, shape)
 		runtime.GC()
 		return arr, err
 	}
 
-	// Fallback: store as F32.
-	arr, err := b.NewArrayFromFloat32(f32Data, shape)
+	// Fallback: store as F32 in [in, out] layout (transposed), per the
+	// F32 MatMul contract (x @ wT with wT pre-transposed).
+	wT, err := b.NewArrayFromFloat32(f32Data, shape)
+	if err != nil {
+		runtime.GC()
+		return nil, err
+	}
+	out := len(f32Data) / shape[len(shape)-1] // shape is [out, in]
+	in := shape[len(shape)-1]
+	wTT, err := b.Transpose(wT, s)
+	wT.Free()
+	if err != nil {
+		runtime.GC()
+		return nil, err
+	}
+	_ = out
+	_ = in
 	runtime.GC()
-	return arr, err
+	return wTT, nil
 }
 
 // readQuantizedWeights reads raw bytes from quantized tensors and dequantizes
@@ -224,4 +253,35 @@ func readQuantizedWeights(w, scales, biases tensor.Array, bits, groupSize int) (
 		biasDtype = biases.Dtype()
 	}
 	return dequantizeAffineGo(wBytes, w.Shape(), scalesBytes, biasesBytes, bits, groupSize, scales.Dtype(), biasDtype)
+}
+
+// DequantizeForTest exposes affine dequantization for diagnostics/tests.
+func DequantizeForTest(w, scales, biases tensor.Array, bits, groupSize int) ([]float32, []int, error) {
+	if err := w.Eval(); err != nil {
+		return nil, nil, err
+	}
+	if err := scales.Eval(); err != nil {
+		return nil, nil, err
+	}
+	wBytes, err := w.RawBytes()
+	if err != nil {
+		return nil, nil, err
+	}
+	sBytes, err := scales.RawBytes()
+	if err != nil {
+		return nil, nil, err
+	}
+	var bBytes []byte
+	bdt := tensor.Float32
+	if biases != nil {
+		if err := biases.Eval(); err != nil {
+			return nil, nil, err
+		}
+		bBytes, err = biases.RawBytes()
+		if err != nil {
+			return nil, nil, err
+		}
+		bdt = biases.Dtype()
+	}
+	return dequantizeAffineGo(wBytes, w.Shape(), sBytes, bBytes, bits, groupSize, scales.Dtype(), bdt)
 }

@@ -105,9 +105,23 @@ func getComputeGKernel(dtype mlx.Dtype) (*mlx.MetalKernel, error) {
 // fusedSwiglu replaces q.swiglu with a single Metal kernel launch.
 // h is the dtype reference, gate and x are the inputs.
 // Returns silu(gate_fp32) * x_fp32, cast back to h's dtype.
-func fusedSwiglu(h, gate, xVal tensor.Array, backend tensor.Backend, stream tensor.Stream) (tensor.Array, error) {
+// mlxGuard returns an error unless backend is the MLX Metal backend. The
+// fused kernels below type-assert their inputs to *mlx.Array and would panic
+// on other backends (e.g. GGML, whose Name() is a device ID like "MTL0");
+// callers fall back to the eager multi-op path on error.
+func mlxGuard(backend tensor.Backend) error {
 	if !backend.Available() {
-		return nil, fmt.Errorf("fused swiglu requires Metal")
+		return fmt.Errorf("fused kernel requires Metal")
+	}
+	if backend.Name() != "metal" {
+		return fmt.Errorf("fused kernel requires MLX backend, got %s", backend.Name())
+	}
+	return nil
+}
+
+func fusedSwiglu(h, gate, xVal tensor.Array, backend tensor.Backend, stream tensor.Stream) (tensor.Array, error) {
+	if err := mlxGuard(backend); err != nil {
+		return nil, err
 	}
 	mlxGate := gate.(*mlx.Array)
 	mlxX := xVal.(*mlx.Array)
@@ -152,8 +166,8 @@ func fusedSwiglu(h, gate, xVal tensor.Array, backend tensor.Backend, stream tens
 // fusedComputeG replaces decayGate with a single Metal kernel launch.
 // Computes g = exp(-exp(A_log) * softplus(a + dt_bias)) in fp32.
 func fusedComputeG(aLog, a, dtBias tensor.Array, backend tensor.Backend, stream tensor.Stream) (tensor.Array, error) {
-	if !backend.Available() {
-		return nil, fmt.Errorf("fused compute_g requires Metal")
+	if err := mlxGuard(backend); err != nil {
+		return nil, err
 	}
 	mlxA := a.(*mlx.Array)
 	mlxAlog := aLog.(*mlx.Array)

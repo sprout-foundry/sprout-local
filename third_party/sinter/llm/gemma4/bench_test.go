@@ -14,7 +14,7 @@ import (
 // TestBenchmarkDecode measures tok/s for a longer generation to verify the
 // C shim actually improves throughput. Requires a model on disk.
 func TestBenchmarkDecode(t *testing.T) {
-	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-4bit")
+	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-5bit")
 	if _, err := os.Stat(modelDir + "/model.safetensors"); err != nil {
 		t.Skip("model not found at", modelDir)
 	}

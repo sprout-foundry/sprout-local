@@ -14,7 +14,7 @@ const testGB = 1024 * 1024 * 1024
 // automatic RAM-based resolution.
 func TestSelectModelForRAM(t *testing.T) {
 	root := t.TempDir()
-	for _, d := range []string{"gemma-4-e2b-it-4bit", "qwen3.5-4b-4bit", "qwen3.5-9b-4bit"} {
+	for _, d := range []string{"gemma-4-e2b-it-5bit", "qwen3.5-4b-4bit", "qwen3.5-9b-4bit"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -25,11 +25,11 @@ func TestSelectModelForRAM(t *testing.T) {
 		ram  uint64
 		want string // expected Dir basename, or "" for error
 	}{
-		{"1gb", 1 * testGB, "gemma-4-e2b-it-4bit"},
-		{"4gb", 4 * testGB, "gemma-4-e2b-it-4bit"},
+		{"1gb", 1 * testGB, "gemma-4-e2b-it-5bit"},
+		{"4gb", 4 * testGB, "gemma-4-e2b-it-5bit"},
 		// 8GB: qwen3.5-4b is only a STRETCH pick here (MinRAMSelect=8GB,
 		// MinRAMSuggested=16GB) — auto-selection must not pick it.
-		{"8gb", 8 * testGB, "gemma-4-e2b-it-4bit"},
+		{"8gb", 8 * testGB, "gemma-4-e2b-it-5bit"},
 		{"16gb", 16 * testGB, "qwen3.5-4b-4bit"},
 		{"24gb", 24 * testGB, "qwen3.5-9b-4bit"},
 		{"32gb", 32 * testGB, "qwen3.5-9b-4bit"}, // 35b-a3b never auto-selected
@@ -57,6 +57,29 @@ func TestCatalogThresholdsMonotonic(t *testing.T) {
 			t.Fatalf("MinRAMSelect not monotonic: %s (%d) after %s (%d)",
 				sorted[i].Name, sorted[i].MinRAMSelect, sorted[i-1].Name, sorted[i-1].MinRAMSelect)
 		}
+	}
+}
+
+// TestMiniCPM5InCatalog pins MiniCPM5-2B's catalog placement: a 2B 4-bit
+// model fits anywhere (MinRAM 0 like gemma4-e2b), and the "largest fitting
+// suggested" rule must not let it shadow larger models on big machines —
+// with equal MinRAMSuggested (0), sortedCatalog keeps input order, so
+// gemma4-e2b (listed first) stays the suggested pick for small RAM and
+// qwen3.5-4b takes over from 16GB.
+func TestMiniCPM5InCatalog(t *testing.T) {
+	m := RecommendModelForRAM(4 * testGB)
+	if m.Name != "gemma4-e2b" && m.Name != "minicpm5-2b" {
+		t.Fatalf("small-RAM suggestion unexpectedly %s", m.Name)
+	}
+	// minicpm5-2b is known and selectable everywhere, including 1GB machines
+	// (as a warned stretch alternative to the gemma4 default).
+	status, known := SelectableForRAM("minicpm5-2b", 1*testGB)
+	if !known || status == TierBlocked {
+		t.Fatalf("minicpm5-2b at 1GB: known=%v status=%v, want known + selectable", known, status)
+	}
+	// At 128GB it must never be the suggested default (bigger models win).
+	if m := RecommendModelForRAM(128 * testGB); m.Name == "minicpm5-2b" {
+		t.Fatal("minicpm5-2b should not be the suggested default on a 128GB machine")
 	}
 }
 

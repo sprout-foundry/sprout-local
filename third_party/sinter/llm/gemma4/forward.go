@@ -1,18 +1,25 @@
-//go:build darwin && arm64 && cgo
+//go:build cgo && ((darwin && arm64) || (linux && ggml && (arm64 || amd64)))
 
 package gemma4
 
 import (
+	"sync/atomic"
+
 	"fmt"
 	"math"
 	"os"
 
 	"github.com/sprout-foundry/sinter/llm"
-	"github.com/sprout-foundry/sinter/mlx"
 	"github.com/sprout-foundry/sinter/tensor"
 )
 
+var gemma4FwCounter int32
+
 func (g *Gemma4) ForwardPrefill(ids tensor.Array, seqLen int, cache *llm.KVCache) ([]float32, error) {
+	// Tag dumps with a forward counter (only when layer dumping is active).
+	if os.Getenv("GEMMA4_LAYERS_DUMP") != "" {
+		os.Setenv("GEMMA4_DUMP_FW", fmt.Sprintf("fw%03d_S%d", atomic.AddInt32(&gemma4FwCounter, 1), seqLen))
+	}
 	logits, err := g.forwardInternal(ids, seqLen, 0, cache)
 	if err != nil {
 		return nil, err
@@ -80,10 +87,13 @@ func (g *Gemma4) forwardInternal(ids tensor.Array, seqLen, startPos int, cache *
 			if err != nil {
 				return nil, fmt.Errorf("slice per-layer %d: %w", i, err)
 			}
-			squeezed, err := g.backend.SqueezeAxis(sliced, 2, s)
+			// Reshape (not SqueezeAxis): GGML slice views keep the sliced
+			// rank in ne[]; a reshape materializes [1, S, perLayerDim] with
+			// a layout every backend broadcasts consistently.
+			squeezed, err := g.backend.Reshape(sliced, []int{1, seqLen, g.cfg.HiddenSizePerLayerInput}, s)
 			if err != nil {
 				sliced.Free()
-				return nil, fmt.Errorf("squeeze per-layer %d: %w", i, err)
+				return nil, fmt.Errorf("reshape per-layer %d: %w", i, err)
 			}
 			perLayerInputs = append(perLayerInputs, squeezed)
 		}
@@ -116,7 +126,10 @@ func (g *Gemma4) forwardInternal(ids tensor.Array, seqLen, startPos int, cache *
 		}
 		h.Free()
 		h = out
-		if os.Getenv("GEMMA4_DEBUG") != "" && (i == 0 || i == 4 || i == 14) {
+		if os.Getenv("GEMMA4_LAYERS_DUMP") != "" {
+			dumpArrayF32(h, fmt.Sprintf("layer_%d_out", i), g.backend, s)
+		}
+		if os.Getenv("GEMMA4_DEBUG") != "" && (i == 0 || i == 1 || i == 2 || i == 4 || i == 14) {
 			dumpArrayF32(h, fmt.Sprintf("layer_%d_out", i), g.backend, s)
 		}
 	}
@@ -223,6 +236,10 @@ func (g *Gemma4) forwardLayer(h tensor.Array, layerIdx, seqLen, startPos int, ca
 		return nil, nil, fmt.Errorf("attention: %w", err)
 	}
 	defer attnOut.Free()
+	if os.Getenv("GEMMA4_DEBUG") != "" && layerIdx == 0 && seqLen <= 24 {
+		dumpArrayF32(normed, "L0_normed", g.backend, s)
+		dumpArrayF32(attnOut, "L0_attnOut", g.backend, s)
+	}
 
 	// Post-attention norm + residual
 	attnNormed, err := g.gemmaRMSNorm(attnOut, lw.postAttnNorm)
@@ -247,6 +264,11 @@ func (g *Gemma4) forwardLayer(h tensor.Array, layerIdx, seqLen, startPos int, ca
 		return nil, nil, fmt.Errorf("mlp: %w", err)
 	}
 	defer ffOut.Free()
+	if os.Getenv("GEMMA4_DEBUG") != "" && layerIdx == 0 && seqLen <= 24 {
+		dumpArrayF32(residual, "L0_residual", g.backend, s)
+		dumpArrayF32(ffNormed, "L0_ffNormed", g.backend, s)
+		dumpArrayF32(ffOut, "L0_ffOut", g.backend, s)
+	}
 	ffNormed2, err := g.gemmaRMSNorm(ffOut, lw.postFFNorm)
 	if err != nil {
 		return nil, nil, fmt.Errorf("post-ff norm: %w", err)
@@ -266,21 +288,16 @@ func (g *Gemma4) forwardLayer(h tensor.Array, layerIdx, seqLen, startPos int, ca
 			return nil, nil, fmt.Errorf("per-layer gate: %w", err)
 		}
 		defer gate.Free()
-		// GELU via C shim (1 CGO call instead of ~15)
-		mlxGate := gate.(*mlx.Array)
-		mlxStream := s.(*mlx.Stream)
-		if geluOut, err := mlx.Gemma4GELU(mlxGate, mlxStream); err == nil {
-			gate = geluOut
-		} else {
-			gate, err = geluApprox(gate, g.backend, s)
-			if err != nil {
-				return nil, nil, fmt.Errorf("per-layer gelu: %w", err)
-			}
+		// Fused GELU where the backend offers it (1 call instead of ~15);
+		// eager tanh approximation otherwise.
+		gate, err = geluFused(gate, g.backend, s)
+		if err != nil {
+			return nil, nil, fmt.Errorf("per-layer gelu: %w", err)
 		}
 		defer gate.Free()
 		gate, err = g.backend.Multiply(gate, perLayerInput, s)
 		if err != nil {
-			return nil, nil, fmt.Errorf("per-layer mul: %w", err)
+			return nil, nil, fmt.Errorf("per-layer mul (gate %v x pli %v): %w", gate.Shape(), perLayerInput.Shape(), err)
 		}
 		defer gate.Free()
 		gate, err = lw.perLayerProjection.Forward(gate, g.backend, s)
@@ -339,6 +356,10 @@ func (g *Gemma4) attention(h tensor.Array, lw *layerWeights, layerIdx int, isFul
 		return nil, nil, err
 	}
 	defer qNormed.Free()
+	if os.Getenv("GEMMA4_LAYERS_DUMP") != "" && layerIdx == 0 {
+		dumpArrayF32(q, "L0_qProj", g.backend, s)
+		dumpArrayF32(qR, "L0_qReshaped", g.backend, s)
+	}
 
 	var kForAttn, vForAttn tensor.Array
 	// KV sharing tracked via intermediateKVs slice
@@ -459,6 +480,10 @@ func (g *Gemma4) attention(h tensor.Array, lw *layerWeights, layerIdx int, isFul
 		return nil, nil, err
 	}
 	defer qT.Free()
+	if os.Getenv("GEMMA4_LAYERS_DUMP") != "" && layerIdx == 0 {
+		dumpArrayF32(qNormed, "L0_qNormed", g.backend, s)
+		dumpArrayF32(qT, "L0_qT", g.backend, s)
+	}
 	qRot, err := g.applyRoPE(qT, isFull, startPos, headDim)
 	if err != nil {
 		return nil, nil, err
@@ -528,6 +553,15 @@ func (g *Gemma4) attention(h tensor.Array, lw *layerWeights, layerIdx int, isFul
 		return nil, nil, err
 	}
 	defer ctx.Free()
+	if os.Getenv("GEMMA4_LAYERS_DUMP") != "" && layerIdx == 0 {
+		dumpArrayF32(qRot, "L0_qRot", g.backend, s)
+		dumpArrayF32(kForAttn, "L0_kAttn", g.backend, s)
+		dumpArrayF32(vForAttn, "L0_vAttn", g.backend, s)
+		dumpArrayF32(ctx, "L0_ctx", g.backend, s)
+		if maskArr != nil {
+			dumpArrayF32(maskArr, "L0_bandMask", g.backend, s)
+		}
+	}
 
 	// Output projection
 	ctxT, err := g.backend.TransposeAxes(ctx, []int{0, 2, 1, 3}, s)
@@ -551,6 +585,17 @@ func (g *Gemma4) attention(h tensor.Array, lw *layerWeights, layerIdx int, isFul
 func (g *Gemma4) applyRoPE(x tensor.Array, isFull bool, offset, headDim int) (tensor.Array, error) {
 	s := g.stream
 	if isFull {
+		if os.Getenv("GEMMA4_ROPE_DEBUG") == "1" {
+			freqs := g.propRoPEFreqs
+			status := "nil"
+			if freqs != nil {
+				status = fmt.Sprintf("shape=%v", freqs.Shape())
+				if d, err := freqs.Float32Data(); err == nil {
+					status += fmt.Sprintf(" head=%v tail=%v", d[:2], d[len(d)-2:])
+				}
+			}
+			fmt.Printf("gemma4/rope L? full headDim=%d offset=%d freqs=%s\n", headDim, offset, status)
+		}
 		return g.backend.FastRoPE(x, headDim, false, 0, 1.0, offset, g.propRoPEFreqs, s)
 	}
 	return llm.ApplyRoPEFast(x, offset, headDim, 10000.0, g.backend, s)
@@ -619,12 +664,12 @@ func (g *Gemma4) bandMask(dtype tensor.Dtype, qLen, kvLen, startPos, window, kvB
 		return nil, err
 	}
 	defer winEdge.Free()
-	inWindow, err := mlx.LessEqual(diff.(*mlx.Array), winEdge.(*mlx.Array), s.(*mlx.Stream))
+	inWindow, err := lessEqual(diff, winEdge, b, s)
 	if err != nil {
 		return nil, err
 	}
 	defer inWindow.Free()
-	causal, err := mlx.LessEqual(kPos4.(*mlx.Array), qPos4.(*mlx.Array), s.(*mlx.Stream))
+	causal, err := lessEqual(kPos4, qPos4, b, s)
 	if err != nil {
 		return nil, err
 	}
@@ -670,24 +715,10 @@ func (g *Gemma4) mlp(h tensor.Array, lw *layerWeights) (tensor.Array, error) {
 		return nil, err
 	}
 	defer up.Free()
-	// GeGLU via C shim (1 CGO call instead of ~15)
-	mlxGate := gate.(*mlx.Array)
-	mlxUp := up.(*mlx.Array)
-	mlxStream := s.(*mlx.Stream)
-	gegluOut, err := mlx.Gemma4GeGLU(mlxGate, mlxUp, mlxStream)
+	// Fused GeGLU where the backend offers it; eager gelu+mul otherwise.
+	gegluOut, err := gegluFused(gate, up, g.backend, s)
 	if err != nil {
-		// Fall back to eager path
-		gateAct, err := geluApprox(gate, g.backend, s)
-		if err != nil {
-			return nil, err
-		}
-		defer gateAct.Free()
-		mul, err := g.backend.Multiply(gateAct, up, s)
-		if err != nil {
-			return nil, err
-		}
-		defer mul.Free()
-		return lw.downProj.Forward(mul, g.backend, s)
+		return nil, err
 	}
 	defer gegluOut.Free()
 	return lw.downProj.Forward(gegluOut, g.backend, s)

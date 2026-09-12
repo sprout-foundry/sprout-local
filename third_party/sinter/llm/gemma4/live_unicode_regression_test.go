@@ -21,7 +21,7 @@ import (
 //     id is the ordinary code token "▁()=>", which truncated any
 //     generation containing an arrow function.
 func TestGemmaLiveUnicodeRoundTrip(t *testing.T) {
-	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-4bit")
+	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-5bit")
 	if _, err := os.Stat(modelDir + "/model.safetensors"); err != nil {
 		t.Skip("model not found")
 	}

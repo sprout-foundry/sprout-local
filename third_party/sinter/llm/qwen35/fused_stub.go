@@ -12,6 +12,10 @@ import (
 	"github.com/sprout-foundry/sinter/tensor"
 )
 
+// compiledDecode is the non-MLX placeholder: PrepareCompiledDecode always
+// fails, so forward.go never dereferences a populated one.
+type compiledDecode struct{}
+
 // PrepareCompiledDecode always fails on non-MLX backends; the Model layer
 // falls back to the eager decode path (interface assertion governs).
 func (q *Qwen35) PrepareCompiledDecode(promptLen, maxTokens int, cache *llm.KVCache) error {

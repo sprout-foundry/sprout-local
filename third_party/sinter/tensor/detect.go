@@ -74,3 +74,6 @@ func PlatformSupported() bool {
 		return false
 	}
 }
+
+// RegisteredBackends exposes the registry for diagnostics.
+func RegisteredBackends() []Backend { return registeredBackends }

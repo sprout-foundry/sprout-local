@@ -224,7 +224,7 @@ func loadQuantizedTriplet(sf *SafetensorsFile, name string, b tensor.Backend, s 
 		// layout directly with quantized kernels. Transposing a Q4_0 tensor
 		// would require dequantization, defeating the purpose.
 		// For F32 tensors (non-Q4_0 backends), pre-transpose as before.
-		if _, ok := b.(Q4_0Quantizer); ok {
+		if _, ok := b.(GGMLQuantizer); ok {
 			// Q4_0 path: store as-is in [out, in] layout. MatMul must use
 			// transpose=true semantics (handled by ggml_mul_mat natively).
 			return &Linear{wT: fullW}, nil

@@ -174,7 +174,7 @@ func LoadEmbedding(sf *SafetensorsFile, name string, b tensor.Backend, s tensor.
 			// Q4_0 tensors (GGML native quantization) can't be transposed —
 			// ggml_get_rows / ggml_mul_mat handle the [out, in] layout
 			// directly. Skip the pre-transpose; Logits falls back to e.w.
-			if _, ok := b.(Q4_0Quantizer); ok {
+			if _, ok := b.(GGMLQuantizer); ok {
 				return &Embedding{w: fullW}, nil
 			}
 			// Pre-transpose for the logits projection (tied lm_head).

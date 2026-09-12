@@ -26,6 +26,9 @@ type ChatMessage struct {
 }
 
 func NewModel(modelDir string) (*Model, error) { return nil, errUnavailable }
+func NewModelWithBackend(modelDir string, backend tensor.Backend) (*Model, error) {
+	return nil, errUnavailable
+}
 func NewModelFromFiles(modelPath, configPath, tokPath string) (*Model, error) {
 	return nil, errUnavailable
 }

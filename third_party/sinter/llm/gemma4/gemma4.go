@@ -1,4 +1,4 @@
-//go:build darwin && arm64 && cgo
+//go:build cgo && ((darwin && arm64) || (linux && ggml && (arm64 || amd64)))
 
 package gemma4
 

@@ -151,6 +151,9 @@ func getDeltaKernel(dk, dv, hk, hv int, inT, stT mlx.Dtype) (*mlx.MetalKernel, e
 // Returns y [B,S,Hv,Dv] (cast to q's dtype) and the final state
 // [B,Hv,Dv,Dk] (cast to state's dtype — fp32 in practice).
 func fusedGatedDeltaUpdate(q, k, v, g, beta, state tensor.Array, backend tensor.Backend, stream tensor.Stream) (tensor.Array, tensor.Array, error) {
+	if err := mlxGuard(backend); err != nil {
+		return nil, nil, err
+	}
 	// Cast to concrete mlx types for Metal kernel access.
 	qM := q.(*mlx.Array)
 	kM := k.(*mlx.Array)

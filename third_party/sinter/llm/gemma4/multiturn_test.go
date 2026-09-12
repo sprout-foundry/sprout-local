@@ -14,7 +14,7 @@ import (
 // across multiple turns of a conversation. The second turn should reuse
 // the prefix K/V from the first turn and produce coherent output.
 func TestMultiTurnPrefixCache(t *testing.T) {
-	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-4bit")
+	modelDir := os.ExpandEnv("$HOME/dev/llm-models/gemma-4-e2b-it-5bit")
 	if _, err := os.Stat(modelDir + "/model.safetensors"); err != nil {
 		t.Skip("model not found")
 	}

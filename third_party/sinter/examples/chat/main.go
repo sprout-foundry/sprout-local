@@ -68,6 +68,11 @@ exit codes: 0 ok, 1 generation/load error, 2 usage error`)
 	// The engine takes a raw prompt string; rendering a chat template is
 	// the caller's job. This is the Qwen-family format - check your
 	// model's tokenizer_config.json (chat_template) for other families.
+	// MiniCPM5 shares the <|im_start|> wrapper but wants a bare newline
+	// after the assistant cue (not an empty think block) — Model.FormatChat
+	// handles that per model, so prefer it when a model is available. For a
+	// quick string-level render here, keep the Qwen format and let -thinking
+	// add the Qwen-style empty think block.
 	rendered := fmt.Sprintf(
 		"<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
 		*sys, *prompt)

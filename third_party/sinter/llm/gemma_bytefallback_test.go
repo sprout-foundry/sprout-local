@@ -13,7 +13,7 @@ import (
 // TestGemmaByteFallbackDecode verifies <0xXX> byte-fallback tokens decode
 // back to raw bytes (HF ground truth: 'box: ⎿ end' -> [2566 236787 236743 464 380 429 1345]).
 func TestGemmaByteFallbackDecode(t *testing.T) {
-	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-4bit"
+	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-5bit"
 	if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
 		t.Skip("model not found")
 	}

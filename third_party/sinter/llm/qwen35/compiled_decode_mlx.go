@@ -87,8 +87,8 @@ func (q *Qwen35) PrepareCompiledDecode(promptLen, maxTokens int, cache *llm.KVCa
 	if q.cd != nil {
 		q.ReleaseCompiledDecode()
 	}
-	if !q.backend.Available() {
-		return fmt.Errorf("qwen35: compiled decode requires Metal")
+	if !q.backend.Available() || q.backend.Name() != "metal" {
+		return fmt.Errorf("qwen35: compiled decode requires the MLX backend (got %q)", q.backend.Name())
 	}
 
 	cd := &compiledDecode{

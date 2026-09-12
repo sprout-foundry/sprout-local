@@ -40,7 +40,7 @@ var parityCases = []parityCase{
 }
 
 func TestGemmaTokenizerParity(t *testing.T) {
-	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-4bit"
+	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-5bit"
 	if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
 		t.Skip("model not found")
 	}
@@ -76,7 +76,7 @@ func TestGemmaTokenizerParity(t *testing.T) {
 // Gemma's vocab carries raw Unicode tokens (ā, 你, 😀); the decode path must
 // not run them through the GPT-2 byte-level decoder.
 func TestGemmaTokenizerDecodeUTF8(t *testing.T) {
-	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-4bit"
+	dir := os.Getenv("HOME") + "/dev/llm-models/gemma-4-e2b-it-5bit"
 	if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
 		t.Skip("model not found")
 	}
