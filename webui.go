@@ -124,11 +124,15 @@ func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error 
 // (system message with the tools block) that every first turn begins
 // with. FormatChatPrefix output is a true prefix of any later
 // FormatChat on the same conversation head, which is what sinter's slot
-// matcher requires.
-func warmPrefixesFor(m *llm.Model, systemPrompt string, tools []core.Tool) []string {
+// matcher requires. The tools block is rendered in the target model's
+// protocol (from its directory), not the session's startup protocol —
+// a mismatched block would never match the slot the provider actually
+// renders on the first turn.
+func warmPrefixesFor(m *llm.Model, modelDir, systemPrompt string, tools []core.Tool) []string {
 	msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
 	if len(tools) > 0 {
-		msgs[0].Content = strings.TrimRight(msgs[0].Content, "\n") + "\n\n" + toolPromptBlockFromSeed(tools)
+		block := toolPromptBlockFromSeedFor(tools, toolProtocolForModelDir(modelDir))
+		msgs[0].Content = strings.TrimRight(msgs[0].Content, "\n") + "\n\n" + block
 	}
 	return []string{m.FormatChatPrefix(msgs)}
 }
@@ -146,7 +150,7 @@ func warmModel(modelDir, systemPrompt string, tools bool, executor core.ToolExec
 	if executor != nil {
 		toolsList = executor.GetTools()
 	}
-	for _, prefix := range warmPrefixesFor(m, systemPrompt, toolsList) {
+	for _, prefix := range warmPrefixesFor(m, modelDir, systemPrompt, toolsList) {
 		if err := m.WarmSystemPrefix(prefix); err != nil {
 			log.Printf("warm: %v", err)
 		}
