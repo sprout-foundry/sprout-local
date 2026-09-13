@@ -734,5 +734,5 @@ const endOfMessage = "[END_OF_MESSAGE]"
 // or -max-tokens).
 const (
 	defaultMaxTokens = 4096
-	temperature      = 0.4
+	temperature      = 0.3
 )
