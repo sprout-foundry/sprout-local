@@ -805,9 +805,9 @@ const commandDenyChars = ";`$\n\r"
 
 // commandDenyNames maps each denied rune to its plain name for the error.
 var commandDenyNames = map[rune]string{
-	';': "command chaining (;)",
-	'`': "command substitution (backticks)",
-	'$': "variable expansion ($)",
+	';':  "command chaining (;)",
+	'`':  "command substitution (backticks)",
+	'$':  "variable expansion ($)",
 	'\n': "newline",
 	'\r': "newline",
 }

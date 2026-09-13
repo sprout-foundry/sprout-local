@@ -157,7 +157,10 @@ func TestInitTunablesEnvOverrides(t *testing.T) {
 	t.Setenv("SPROUT_LOCAL_TOOL_RESULT_CAP", "9999")
 	t.Setenv("SPROUT_LOCAL_COMMAND_TIMEOUT", "60")
 	t.Setenv("SPROUT_LOCAL_MAX_TOKENS", "8192")
-	old := struct{ s, c, m int; d time.Duration }{maxToolSteps, toolResultCap, maxTokens, commandTimeout}
+	old := struct {
+		s, c, m int
+		d       time.Duration
+	}{maxToolSteps, toolResultCap, maxTokens, commandTimeout}
 	t.Cleanup(func() {
 		maxToolSteps, toolResultCap, maxTokens, commandTimeout = old.s, old.c, old.m, old.d
 	})

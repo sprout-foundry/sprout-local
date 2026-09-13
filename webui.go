@@ -462,9 +462,9 @@ func (s *webServer) handlePull(c *wsClient, name string) {
 		return
 	}
 	c.enqueue(map[string]any{
-		"pulled":    m.Name,
-		"dir":       dest,
-		"model":     filepath.Base(dest),
+		"pulled":        m.Name,
+		"dir":           dest,
+		"model":         filepath.Base(dest),
 		"conversations": listConversations(),
 	})
 }
@@ -753,9 +753,9 @@ func (s *webServer) handlePullCatalog(w http.ResponseWriter, r *http.Request) {
 	ram := totalSystemRAM()
 	suggested := catalog.SuggestedForRAM(ram)
 	type entry struct {
-		Name  string `json:"name"`
-		Repo  string `json:"repo"`
-		Tag   string `json:"tag,omitempty"`
+		Name string `json:"name"`
+		Repo string `json:"repo"`
+		Tag  string `json:"tag,omitempty"`
 	}
 	entries := make([]entry, 0, len(catalog.ModelCatalog))
 	for _, m := range catalog.ModelCatalog {
