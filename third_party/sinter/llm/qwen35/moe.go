@@ -4,6 +4,7 @@ package qwen35
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/tensor"
@@ -35,9 +36,23 @@ type sparseMoeBlock struct {
 	normTopkProb     bool
 }
 
-func (m *sparseMoeBlock) loadWeights(sf *llm.SafetensorsFile, prefix string, b tensor.Backend, s tensor.Stream, quant *llm.QuantConfig) error {
+func (m *sparseMoeBlock) loadWeights(sf *llm.SafetensorsFile, prefix string, b tensor.Backend, s tensor.Stream, quant *llm.QuantConfig, lora *llm.LoraAdapter, mergedClasses map[string]bool) error {
 	var err error
 	p := prefix + ".mlp"
+
+	// load merges the shared-expert projections when the adapter covers them
+	// (routed switch_mlp experts are never LoRA targets).
+	load := func(name string) (*llm.Linear, error) {
+		base := strings.TrimSuffix(name, ".weight")
+		l, err := llm.LoadLinearLora(sf, name, b, s, quant, lora)
+		if err != nil {
+			return nil, err
+		}
+		if l != nil && strings.Contains(base, "shared_expert") {
+			mergedClasses["shared_expert"] = true
+		}
+		return l, nil
+	}
 
 	if m.gate, err = llm.LoadLinear(sf, p+".gate.weight", b, s, quant); err != nil {
 		return fmt.Errorf("moe gate: %w", err)
@@ -51,13 +66,13 @@ func (m *sparseMoeBlock) loadWeights(sf *llm.SafetensorsFile, prefix string, b t
 	if m.switchDownProj, err = llm.LoadLinear(sf, p+".switch_mlp.down_proj.weight", b, s, quant); err != nil {
 		return fmt.Errorf("moe switch down_proj: %w", err)
 	}
-	if m.sharedGateProj, err = llm.LoadLinear(sf, p+".shared_expert.gate_proj.weight", b, s, quant); err != nil {
+	if m.sharedGateProj, err = load(p + ".shared_expert.gate_proj.weight"); err != nil {
 		return fmt.Errorf("moe shared gate_proj: %w", err)
 	}
-	if m.sharedUpProj, err = llm.LoadLinear(sf, p+".shared_expert.up_proj.weight", b, s, quant); err != nil {
+	if m.sharedUpProj, err = load(p + ".shared_expert.up_proj.weight"); err != nil {
 		return fmt.Errorf("moe shared up_proj: %w", err)
 	}
-	if m.sharedDownProj, err = llm.LoadLinear(sf, p+".shared_expert.down_proj.weight", b, s, quant); err != nil {
+	if m.sharedDownProj, err = load(p + ".shared_expert.down_proj.weight"); err != nil {
 		return fmt.Errorf("moe shared down_proj: %w", err)
 	}
 	if m.sharedExpertGate, err = llm.LoadLinear(sf, p+".shared_expert_gate.weight", b, s, quant); err != nil {

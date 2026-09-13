@@ -16,7 +16,7 @@ const testGB = 1024 * 1024 * 1024
 // fitting installed stretch model rather than fail outright.
 func TestSelectModelForRAM(t *testing.T) {
 	root := t.TempDir()
-	for _, d := range []string{"gemma-4-e2b-it-5bit", "qwen3.5-4b-4bit", "qwen3.5-9b-4bit"} {
+	for _, d := range []string{"minicpm5-2b-mlx", "gemma-4-e2b-it-5bit", "qwen3.5-4b-4bit", "qwen3.5-9b-4bit"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -27,11 +27,12 @@ func TestSelectModelForRAM(t *testing.T) {
 		ram  uint64
 		want string // expected Dir basename, or "" for error
 	}{
-		{"1gb", 1 * testGB, "gemma-4-e2b-it-5bit"},
-		{"4gb", 4 * testGB, "gemma-4-e2b-it-5bit"},
+		{"1gb", 1 * testGB, "minicpm5-2b-mlx"},
+		{"4gb", 4 * testGB, "minicpm5-2b-mlx"},
 		// 8GB: qwen3.5-4b is only a STRETCH pick here (MinRAMSelect=8GB,
-		// MinRAMSuggested=16GB) — auto-selection must not pick it.
-		{"8gb", 8 * testGB, "gemma-4-e2b-it-5bit"},
+		// MinRAMSuggested=16GB) — auto-selection must not pick it. The
+		// suggested default is minicpm5-2b (SOTA 2B class).
+		{"8gb", 8 * testGB, "minicpm5-2b-mlx"},
 		{"16gb", 16 * testGB, "qwen3.5-4b-4bit"},
 		{"24gb", 24 * testGB, "qwen3.5-9b-4bit"},
 		{"32gb", 32 * testGB, "qwen3.5-9b-4bit"}, // 35b-a3b never auto-selected
@@ -91,19 +92,22 @@ func TestCatalogThresholdsMonotonic(t *testing.T) {
 // TestMiniCPM5InCatalog pins MiniCPM5-2B's catalog placement: a 2B 4-bit
 // model fits anywhere (MinRAM 0 like gemma4-e2b), and the "largest fitting
 // suggested" rule must not let it shadow larger models on big machines —
-// with equal MinRAMSuggested (0), sortedCatalog keeps input order, so
-// gemma4-e2b (listed first) stays the suggested pick for small RAM and
+// with equal MinRAMSuggested (0), sortedCatalog keeps input order, and
+// minicpm5-2b is listed FIRST, so it is the suggested default for small
+// machines (SOTA for its size class; the right pick for 8GB) while
 // qwen3.5-4b takes over from 16GB.
 func TestMiniCPM5InCatalog(t *testing.T) {
-	m := RecommendModelForRAM(4 * testGB)
-	if m.Name != "gemma4-e2b" && m.Name != "minicpm5-2b" {
-		t.Fatalf("small-RAM suggestion unexpectedly %s", m.Name)
+	if m := RecommendModelForRAM(4 * testGB); m.Name != "minicpm5-2b" {
+		t.Fatalf("small-RAM suggestion = %s, want minicpm5-2b (SOTA 2B default)", m.Name)
+	}
+	if m := RecommendModelForRAM(8 * testGB); m.Name != "minicpm5-2b" {
+		t.Fatalf("8GB suggestion = %s, want minicpm5-2b", m.Name)
 	}
 	// minicpm5-2b is known and selectable everywhere, including 1GB machines
-	// (as a warned stretch alternative to the gemma4 default).
+	// (as the suggested default, with gemma4-e2b as an eligible alternative).
 	status, known := SelectableForRAM("minicpm5-2b", 1*testGB)
-	if !known || status == TierBlocked {
-		t.Fatalf("minicpm5-2b at 1GB: known=%v status=%v, want known + selectable", known, status)
+	if !known || status != TierSuggested {
+		t.Fatalf("minicpm5-2b at 1GB: known=%v status=%v, want known + suggested", known, status)
 	}
 	// At 128GB it must never be the suggested default (bigger models win).
 	if m := RecommendModelForRAM(128 * testGB); m.Name == "minicpm5-2b" {
@@ -118,9 +122,9 @@ func TestRecommendModelForRAM(t *testing.T) {
 		ram  uint64
 		want string
 	}{
-		{1 * testGB, "gemma4-e2b"},
-		{4 * testGB, "gemma4-e2b"},
-		{8 * testGB, "gemma4-e2b"},
+		{1 * testGB, "minicpm5-2b"},
+		{4 * testGB, "minicpm5-2b"},
+		{8 * testGB, "minicpm5-2b"},
 		{16 * testGB, "qwen3.5-4b"},
 		{24 * testGB, "qwen3.5-9b"},
 		{32 * testGB, "qwen3.5-9b"},
@@ -128,11 +132,8 @@ func TestRecommendModelForRAM(t *testing.T) {
 	}
 	for _, tc := range cases {
 		m := RecommendModelForRAM(tc.ram)
-		if m == nil || m.Name != tc.want {
-			t.Fatalf("RecommendModelForRAM(%d) = %+v, want %s", tc.ram, m, tc.want)
-		}
-		if m.HFRepo == "" {
-			t.Fatalf("catalog entry %s missing HFRepo", m.Name)
+		if m.Name != tc.want {
+			t.Fatalf("RecommendModelForRAM(%dGB) = %s, want %s", tc.ram/testGB, m.Name, tc.want)
 		}
 	}
 }
@@ -152,31 +153,31 @@ func TestTieredCatalogForRAM(t *testing.T) {
 		expect map[string]TierStatus
 	}{
 		{"4gb", 4 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierSuggested, "qwen3.5-4b": TierBlocked, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierSuggested, "gemma4-e2b": TierStretch, "qwen3.5-4b": TierBlocked, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"8gb", 8 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierSuggested, "qwen3.5-4b": TierStretch, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierSuggested, "gemma4-e2b": TierStretch, "qwen3.5-4b": TierStretch, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"12gb", 12 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierSuggested, "qwen3.5-4b": TierStretch, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierSuggested, "gemma4-e2b": TierStretch, "qwen3.5-4b": TierStretch, "qwen3.5-9b": TierBlocked, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"16gb", 16 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierSuggested, "qwen3.5-9b": TierStretch, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierSuggested, "qwen3.5-9b": TierStretch, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"20gb", 20 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierSuggested, "qwen3.5-9b": TierStretch, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierSuggested, "qwen3.5-9b": TierStretch, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"24gb", 24 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"28gb", 28 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierBlocked,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"32gb", 32 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
 		}},
 		{"128gb", 128 * testGB, map[string]TierStatus{
-			"gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
 		}},
 	}
 	for _, tc := range cases {

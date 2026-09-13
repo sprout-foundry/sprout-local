@@ -41,6 +41,11 @@ type SafetensorsFile struct {
 	// allocation.
 	mmapData []byte
 
+	// meta is the file's __metadata__ map (nil when absent). Populated by the
+	// single-file reader; sharded readers leave it nil (each shard has its own
+	// header, consulted lazily). LoRA adapter scale/alpha are carried here.
+	meta map[string]string
+
 	// Sharded-model fields (only set when the model spans multiple files).
 	weightMap map[string]string           // tensor name -> shard filename
 	shards    map[string]*SafetensorsFile // shard filename -> single-file reader
@@ -154,7 +159,51 @@ func openSingleSafetensors(path string) (*SafetensorsFile, error) {
 		return nil, err
 	}
 
-	return &SafetensorsFile{header: headerMap, rawData: mapped[dataStart:], mmapData: mapped}, nil
+	// __metadata__ is a plain JSON object in the raw header (parseSafetensorsHeader
+	// unmarshals it into an empty safetensorEntry — harmless, but we extract it
+	// properly so callers like the LoRA loader can read adapter scale/alpha).
+	// It is not a tensor, so drop it from the header map.
+	var rawHeader struct {
+		Metadata map[string]string `json:"__metadata__"`
+	}
+	_ = json.Unmarshal(mapped[8:dataStart], &rawHeader)
+	delete(headerMap, "__metadata__")
+
+	return &SafetensorsFile{header: headerMap, rawData: mapped[dataStart:], mmapData: mapped, meta: rawHeader.Metadata}, nil
+}
+
+// HeaderMetadata returns the file's __metadata__ map (empty when absent).
+// Sharded models report an empty map: each shard has its own header and the
+// top-level reader does not consult them.
+//
+// Some producers (edge0) wrap the real metadata one level deeper: a top-level
+// "__metadata__" KEY inside the __metadata__ map whose value is a JSON-encoded
+// object. HeaderMetadata unwraps that inner object when present, so callers
+// see the real fields (r, alpha, …) directly.
+func (sf *SafetensorsFile) HeaderMetadata() map[string]string {
+	if sf.meta == nil {
+		return map[string]string{}
+	}
+	if inner, ok := sf.meta["__metadata__"]; ok {
+		var unwrapped map[string]string
+		if json.Unmarshal([]byte(inner), &unwrapped) == nil && len(unwrapped) > 0 {
+			return unwrapped
+		}
+	}
+	return sf.meta
+}
+
+// TensorShape reports the stored shape of a tensor (empty when the tensor is
+// absent, including for sharded models — the shard headers are consulted
+// lazily on Get). Used by the LoRA loader to size its adapter A/B matrices.
+func (sf *SafetensorsFile) TensorShape(name string) []int {
+	if sf.weightMap != nil {
+		return nil
+	}
+	if entry, ok := sf.header[name]; ok {
+		return entry.Shape
+	}
+	return nil
 }
 
 // Get loads a tensor by name as a native-dtype tensor.Array. BF16 and F16 weights

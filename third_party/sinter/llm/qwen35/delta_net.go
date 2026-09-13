@@ -79,24 +79,35 @@ func (g *gatedDeltaNet) free() {
 
 // loadWeights loads the linear_attn.* tensors for a layer. Name is the
 // per-layer prefix WITHOUT the trailing ".linear_attn" (e.g.
-// "model.language_model.layers.0").
-func (g *gatedDeltaNet) loadWeights(sf *llm.SafetensorsFile, name string, b tensor.Backend, s tensor.Stream, quant *llm.QuantConfig) error {
+// "model.language_model.layers.0"). lora is the parsed adapter (nil = no
+// merge); mergedClasses records which LoRA classes were actually applied.
+func (g *gatedDeltaNet) loadWeights(sf *llm.SafetensorsFile, name string, b tensor.Backend, s tensor.Stream, quant *llm.QuantConfig, lora *llm.LoraAdapter, mergedClasses map[string]bool) error {
 	// name is the full linear_attn key prefix (e.g.
 	// "language_model.model.layers.0.linear_attn").
+	load := func(name string) (*llm.Linear, error) {
+		l, err := llm.LoadLinearLora(sf, name, b, s, quant, lora)
+		if err != nil {
+			return nil, err
+		}
+		if l != nil {
+			mergedClasses["linear_attn"] = true
+		}
+		return l, nil
+	}
 	var err error
-	if g.inProjQKV, err = llm.LoadLinear(sf, name+".in_proj_qkv.weight", b, s, quant); err != nil {
+	if g.inProjQKV, err = load(name + ".in_proj_qkv.weight"); err != nil {
 		return fmt.Errorf("in_proj_qkv: %w", err)
 	}
-	if g.inProjZ, err = llm.LoadLinear(sf, name+".in_proj_z.weight", b, s, quant); err != nil {
+	if g.inProjZ, err = load(name + ".in_proj_z.weight"); err != nil {
 		return fmt.Errorf("in_proj_z: %w", err)
 	}
-	if g.inProjB, err = llm.LoadLinear(sf, name+".in_proj_b.weight", b, s, quant); err != nil {
+	if g.inProjB, err = load(name + ".in_proj_b.weight"); err != nil {
 		return fmt.Errorf("in_proj_b: %w", err)
 	}
-	if g.inProjA, err = llm.LoadLinear(sf, name+".in_proj_a.weight", b, s, quant); err != nil {
+	if g.inProjA, err = load(name + ".in_proj_a.weight"); err != nil {
 		return fmt.Errorf("in_proj_a: %w", err)
 	}
-	if g.outProj, err = llm.LoadLinear(sf, name+".out_proj.weight", b, s, quant); err != nil {
+	if g.outProj, err = load(name + ".out_proj.weight"); err != nil {
 		return fmt.Errorf("out_proj: %w", err)
 	}
 

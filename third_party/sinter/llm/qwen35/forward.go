@@ -8,11 +8,52 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/tensor"
 )
+
+// loraClassFromBase classifies a base weight name for the merge summary
+// log: "linear_attn" (gated-delta-net projections), "self_attn" (full
+// attention projections), "shared_expert" (MoE shared-expert projections),
+// or "other" (anything the Edge0-style adapters don't cover).
+func loraClassFromBase(base string) string {
+	switch {
+	case strings.Contains(base, ".linear_attn."):
+		return "linear_attn"
+	case strings.Contains(base, ".self_attn."):
+		return "self_attn"
+	case strings.Contains(base, "shared_expert"):
+		return "shared_expert"
+	default:
+		return "other"
+	}
+}
+
+// loraScaleAndRank is llm.LoraAdapter's scale parse surfaced for the merge
+// summary; the adapter carries Alpha/Rank alongside Scale.
+func loraLogSummary(q *Qwen35, mergedClasses map[string]bool) {
+	if q.lora == nil || len(mergedClasses) == 0 {
+		return
+	}
+	order := []string{"linear_attn", "self_attn", "shared_expert"}
+	var parts []string
+	total := 0
+	for _, c := range order {
+		if mergedClasses[c] {
+			parts = append(parts, c)
+			total++
+		}
+	}
+	if other := mergedClasses["other"]; other {
+		parts = append(parts, "other")
+	}
+	log.Printf("qwen35: merged LoRA (r=%d, alpha=%d, scale=%.1f): %d projection classes: %s",
+		q.lora.Rank, q.lora.Alpha, q.lora.Scale, total, strings.Join(parts, ", "))
+}
 
 func init() {
 	llm.RegisterArchitecture("qwen3_5_text", New)
@@ -41,6 +82,11 @@ type Qwen35 struct {
 	// already added 1 to the RMSNorm weights. When true, rmsNormQwen35
 	// uses plain multiplication instead of (1+w).
 	normPreAdded bool
+
+	// lora is the parsed Recover-LoRA adapter (nil when the model dir has no
+	// lora_*.safetensors). Set in InitWeights before the per-layer loop so the
+	// load helpers can merge each target projection into its base weight.
+	lora *llm.LoraAdapter
 }
 
 func New(cfg llm.ModelConfig, backend tensor.Backend) (llm.Architecture, error) {
@@ -169,6 +215,29 @@ func (q *Qwen35) InitWeights(path string, s tensor.Stream) error {
 		return fmt.Errorf("load final norm: %w", err)
 	}
 
+	// LoRA merge-at-load: parse the Recover-LoRA adapter (nil when the model dir
+	// has no lora_*.safetensors) before the per-layer loop so every target
+	// projection can be merged into its base weight at load time. mergedClasses
+	// records, once per class, which projection groups were actually merged.
+	q.lora, err = llm.LoadLoraAdapter(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("load lora adapter: %w", err)
+	}
+	mergedClasses := map[string]bool{}
+	loadLinear := func(name string) (*llm.Linear, error) {
+		base := strings.TrimSuffix(name, ".weight")
+		class := loraClassFromBase(base)
+		l, merr := llm.LoadLinearLora(sf, name, q.backend, s, q.cfg.Quantization, q.lora)
+		if merr != nil {
+			return nil, merr
+		}
+		if l != nil && class != "other" {
+			mergedClasses[class] = true
+		}
+		return l, nil
+	}
+	defer loraLogSummary(q, mergedClasses)
+
 	for i := 0; i < q.cfg.NumLayers; i++ {
 		p := fmt.Sprintf("%slayers.%d", prefix, i)
 		lw := &w.layers[i]
@@ -184,26 +253,22 @@ func (q *Qwen35) InitWeights(path string, s tensor.Stream) error {
 
 		if isLinearLayer(i, q.cfg.FullAttentionInterval) {
 			dn := newGatedDeltaNet(q.cfg)
-			if err := dn.loadWeights(sf, p+".linear_attn", q.backend, s, q.cfg.Quantization); err != nil {
+			if err := dn.loadWeights(sf, p+".linear_attn", q.backend, s, q.cfg.Quantization, q.lora, mergedClasses); err != nil {
 				return fmt.Errorf("layer %d linear_attn: %w", i, err)
 			}
 			lw.linearAttn = dn
 		} else {
 			sa := &selfAttnWeights{}
-			sa.qProj, err = llm.LoadLinear(sf, p+".self_attn.q_proj.weight", q.backend, s, q.cfg.Quantization)
-			if err != nil {
+			if sa.qProj, err = loadLinear(p + ".self_attn.q_proj.weight"); err != nil {
 				return fmt.Errorf("layer %d q_proj: %w", i, err)
 			}
-			sa.kProj, err = llm.LoadLinear(sf, p+".self_attn.k_proj.weight", q.backend, s, q.cfg.Quantization)
-			if err != nil {
+			if sa.kProj, err = loadLinear(p + ".self_attn.k_proj.weight"); err != nil {
 				return fmt.Errorf("layer %d k_proj: %w", i, err)
 			}
-			sa.vProj, err = llm.LoadLinear(sf, p+".self_attn.v_proj.weight", q.backend, s, q.cfg.Quantization)
-			if err != nil {
+			if sa.vProj, err = loadLinear(p + ".self_attn.v_proj.weight"); err != nil {
 				return fmt.Errorf("layer %d v_proj: %w", i, err)
 			}
-			sa.oProj, err = llm.LoadLinear(sf, p+".self_attn.o_proj.weight", q.backend, s, q.cfg.Quantization)
-			if err != nil {
+			if sa.oProj, err = loadLinear(p + ".self_attn.o_proj.weight"); err != nil {
 				return fmt.Errorf("layer %d o_proj: %w", i, err)
 			}
 			sa.qNorm, err = sf.Get(p+".self_attn.q_norm.weight", q.backend, s)
@@ -225,7 +290,7 @@ func (q *Qwen35) InitWeights(path string, s tensor.Stream) error {
 				numExpertsPerTok: q.cfg.NumExpertsPerTok,
 				normTopkProb:     q.cfg.NormTopkProb,
 			}
-			if err := moe.loadWeights(sf, p, q.backend, s, q.cfg.Quantization); err != nil {
+			if err := moe.loadWeights(sf, p, q.backend, s, q.cfg.Quantization, q.lora, mergedClasses); err != nil {
 				return fmt.Errorf("layer %d moe: %w", i, err)
 			}
 			lw.moe = moe
