@@ -26,28 +26,26 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sprout-foundry/sinter/llm"
 )
 
+// Session-tunable defaults. initTunables (runtime.go) applies
+// SPROUT_LOCAL_MAX_STEPS, SPROUT_LOCAL_TOOL_RESULT_CAP,
+// SPROUT_LOCAL_COMMAND_TIMEOUT and SPROUT_LOCAL_MAX_TOKENS; the -max-steps
+// and -max-tokens flags override the environment.
 const (
-	// maxToolSteps caps tool round-trips per user turn, so a model that
-	// keeps calling tools can't loop forever (or burn the token budget).
-	maxToolSteps = 4
-	// toolResultCap bounds each tool result fed back to the model.
-	toolResultCap = 4000 // characters
-	// commandTimeout bounds run_command executions.
-	commandTimeout = 30 * time.Second
+	// defaultMaxToolSteps caps tool round-trips per user turn, so a model
+	// that keeps calling tools can't loop forever (or burn the token
+	// budget). Default raised from 4: with self-correcting errors, a
+	// lookup usually needs 1–2 steps and a broken first guess shouldn't
+	// kill the turn.
+	defaultMaxToolSteps = 8
+	// defaultToolResultCap bounds each tool result fed back to the model.
+	defaultToolResultCap = 6000 // characters
+	// defaultCommandTimeout bounds run_command executions, in seconds.
+	defaultCommandTimeout = 30
 )
-
-// toolsRequested is the REPL session switch, toggled by /tools. Tools add
-// prompt tokens and free-form calls to a small model, so they start off.
-var toolsRequested bool
-
-// toolSafetyBypass skips the run_command confirmation prompt (set by
-// `/tools yolo`). Every other tool runs without prompting.
-var toolSafetyBypass bool
 
 // toolSpec describes one tool: declaration fields (name, description,
 // parameters) plus the native Go implementation.
@@ -86,8 +84,13 @@ var toolRegistry = []toolSpec{
 		run: toolRunWriteFile,
 	},
 	{
-		name:        "run_command",
-		description: "Run a short shell command in the current working directory and return stdout+stderr. For quick lookups only (ls, cat, grep, git status, …). Requires user confirmation at runtime.",
+		name: "run_command",
+		description: "Run one shell command via /bin/sh and return stdout+stderr combined. " +
+			"Pipes and quoted arguments work, so `ifconfig | grep inet` is fine. " +
+			"For quick lookups (ls, cat, grep, git status, ifconfig, …). " +
+			"Chaining with ; & && || and file redirects (>, >>, <, <<) are not available — " +
+			"stderr is captured automatically, so no 2>/dev/null is needed. " +
+			"Requires user confirmation at runtime.",
 		parameters: []toolParam{
 			{name: "command", typeName: "string", description: "The shell command line", required: true},
 		},
@@ -577,7 +580,7 @@ func resolveToolPath(p string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("path %q is outside the sandbox (allowed: cwd, /tmp, $TMPDIR)", p)
+	return "", fmt.Errorf("path %q is outside the sandbox (allowed: %s, /tmp, $TMPDIR) — use a relative path from the working directory or a /tmp path", p, cwd())
 }
 
 // sandboxRoots lists the allowed absolute roots. os.TempDir() is $TMPDIR on
@@ -637,9 +640,22 @@ func truncateToolResult(s string) string {
 }
 
 // truncateResultForDisplay shortens a tool result for the one-line REPL
-// status line (full text still goes to the model).
+// status line (full text still goes to the model). The raw first line is
+// often a comment banner ("##" in /etc/hosts), which tells the approving
+// human nothing — skip lines that carry no content before falling back.
 func truncateResultForDisplay(s string) string {
 	const max = 120
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		r := []rune(trimmed)
+		if len(r) <= max {
+			return string(r)
+		}
+		return string(r[:max]) + "…"
+	}
 	r := []rune(firstLine(s))
 	if len(r) <= max {
 		return string(r)
@@ -658,7 +674,8 @@ func toolResultMessage(name, result string) llm.ChatMessage {
 // ─── /tools command ──────────────────────────────────────────────────────
 
 // handleToolsCommand shows/toggles tool mode. "yolo" also skips the
-// run_command confirmation prompt.
+// run_command confirmation prompt. The choice persists in tools.json and
+// is restored on the next launch.
 func handleToolsCommand(args string) {
 	n, errs := reloadSkills()
 	for _, err := range errs {
@@ -678,9 +695,6 @@ func handleToolsCommand(args string) {
 			status = "run_command does not ask (yolo)"
 		}
 		fmt.Printf("Tools are on; %s.\nTools: %s\n", status, toolNames())
-		if n > 0 {
-			fmt.Printf("Skills: %s\n", skillNames())
-		}
 		if n > 0 {
 			fmt.Printf("Skills: %s\n", skillNames())
 		}
@@ -704,7 +718,9 @@ func handleToolsCommand(args string) {
 		}
 	default:
 		fmt.Println("usage: /tools [on|off|yolo]")
+		return
 	}
+	saveToolsPreference()
 }
 
 // toolNames lists registry names for status lines.
@@ -780,32 +796,49 @@ func toolRunWriteFile(ctx context.Context, args map[string]string) (string, erro
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
-// commandAllowBits are the bits of any argument word that immediately mark
-// a command as unsafe (shell metacharacters used for chaining, redirection
-// or substitution). run_command is for quick lookups and awk-style
-// one-liners: $ is allowed (awk '{sum+=$1}'), pipes/chaining/redirects are
-// not.
-const commandAllowBits = "|;&`><\n\r"
+// commandDenyChars are the characters refused in yolo mode (no per-command
+// user approval there, so command chaining and substitution stay off the
+// table). The interactive mode runs the command under /bin/sh after an
+// explicit y/N confirm — the confirmed literal text is the consent, and
+// pipes/quotes are exactly what make lookups useful.
+const commandDenyChars = ";`$\n\r"
+
+// commandDenyNames maps each denied rune to its plain name for the error.
+var commandDenyNames = map[rune]string{
+	';': "command chaining (;)",
+	'`': "command substitution (backticks)",
+	'$': "variable expansion ($)",
+	'\n': "newline",
+	'\r': "newline",
+}
 
 // toolRunCommand runs the command. Confirmation is owned by the seed
 // executor (UI.Confirm or the yolo bypass) — this function just executes.
-// Shell-free (no sh -c): arguments split on whitespace, so
-// chaining/redirection metacharacters are rejected up front.
+// Interactive (confirmed) runs go through /bin/sh so pipes and quoting
+// work; yolo runs skip the shell and stay single-command (exec argv split,
+// the characters above refused up front).
 func toolRunCommand(ctx context.Context, args map[string]string) (string, error) {
 	cmdline := strings.TrimSpace(args["command"])
 	if cmdline == "" {
 		return "", fmt.Errorf("empty command")
 	}
-	for _, r := range cmdline {
-		if strings.ContainsRune(commandAllowBits, r) {
-			return "", fmt.Errorf("refusing command with %q — run_command takes a single simple command", string(r))
-		}
-	}
-	fields := strings.Fields(cmdline)
-
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, fields[0], fields[1:]...)
+
+	var cmd *exec.Cmd
+	if toolSafetyBypass {
+		for _, r := range cmdline {
+			if name, bad := commandDenyNames[r]; bad {
+				return "", fmt.Errorf("refusing %s in yolo mode — run one simple command (e.g. %q)",
+					name, strings.Fields(cmdline)[0])
+			}
+		}
+		fields := strings.Fields(cmdline)
+		cmd = exec.CommandContext(ctx, fields[0], fields[1:]...)
+	} else {
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
+	}
+
 	cmd.Dir = cwd()
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimRight(string(out), "\n")

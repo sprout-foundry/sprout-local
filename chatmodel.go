@@ -726,8 +726,10 @@ func ctxBg() context.Context { return context.Background() }
 const endOfMessage = "[END_OF_MESSAGE]"
 
 // Generation parameters for chat. Higher temperature than gmitllm's 0.2 —
-// conversation benefits from a little more variety.
+// conversation benefits from a little more variety. maxTokens is the
+// session default (runtime.go makes it tunable via SPROUT_LOCAL_MAX_TOKENS
+// or -max-tokens).
 const (
-	maxTokens   = 2048
-	temperature = 0.4
+	defaultMaxTokens = 4096
+	temperature      = 0.4
 )

@@ -142,10 +142,13 @@ func activeToolSpecs() []toolSpec {
 // runSkillCommand executes a skill's fixed command line (same gate rules
 // as run_command: no shell, no metacharacters, timeout).
 func runSkillCommand(ctx context.Context, s skill) (string, error) {
+	// Skills are user-installed fixed command lines — no per-call prompt.
+	// They run shell-free (exec argv, no /bin/sh), so substitution
+	// characters are refused up front, same as yolo-mode run_command.
 	for _, a := range append([]string{s.Command}, s.Args...) {
 		for _, r := range a {
-			if strings.ContainsRune(commandAllowBits, r) {
-				return "", fmt.Errorf("skill %s: refusing argument with %q", s.Name, string(r))
+			if name, bad := commandDenyNames[r]; bad {
+				return "", fmt.Errorf("skill %s: refusing argument with %s", s.Name, name)
 			}
 		}
 	}

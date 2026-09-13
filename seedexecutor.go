@@ -23,6 +23,27 @@ type toolExecutor struct {
 	ui core.UI
 }
 
+// sessionApprovedCommands holds command words the user approved with
+// "always" (a) at the y/N prompt. They skip further prompts for the rest
+// of the session — approval fatigue was the other half of the old
+// run_command friction. In-memory only: a fresh process asks again.
+var sessionApprovedCommands []string
+
+// commandApproved reports whether the command line's first word was
+// session-approved.
+func commandApproved(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, a := range sessionApprovedCommands {
+		if fields[0] == a {
+			return true
+		}
+	}
+	return false
+}
+
 func newToolExecutor(ui core.UI) *toolExecutor {
 	if ui == nil {
 		ui = core.NoopUI
@@ -119,12 +140,14 @@ func (e *toolExecutor) runSpec(ctx context.Context, spec *toolSpec, args map[str
 	}
 	if name == "run_command" && !toolSafetyBypass {
 		cmdline := strings.TrimSpace(args["command"])
-		ok, err := e.ui.Confirm("run command: " + cmdline + " — allow? [y/N]")
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "run_command is not available in the web UI. Do not retry it — continue without it: answer from what you know, or use another tool like read_file.", nil
+		if !commandApproved(cmdline) {
+			ok, err := e.ui.Confirm("run command: " + cmdline + " — allow? [y/N/a]")
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "The user declined this command. Do not retry the same command — continue without it: answer from what you know, or use another tool like read_file.", nil
+			}
 		}
 	}
 	return spec.run(ctx, args)

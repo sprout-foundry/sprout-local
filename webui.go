@@ -34,6 +34,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -164,10 +165,11 @@ func warmModel(modelDir, systemPrompt string, tools bool, executor core.ToolExec
 // to copy-paste" behavior for create/write asks, declining to use tools
 // that are actually available.
 func webSystemPrompt(tools bool) string {
+	env := environmentContext()
 	if !tools {
-		return ""
+		return env
 	}
-	return "You are a helpful assistant working on the user's local machine. " +
+	return env + "\n\nYou are a helpful assistant working on the user's local machine. " +
 		"When the user asks you to create, write, save, or generate files or code, " +
 		"actually perform the action with your tools (write_file for file creation, " +
 		"read_file to inspect existing files) instead of printing code for the user to copy. " +
@@ -547,12 +549,13 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	// straight to the socket (blocking send, cancel-aware).
 	c.provider.ResetTurnCount()
 	streamCtx, cancel := context.WithCancel(ctx)
-	c.provider.SetDisplay(func(delta string) {
+	display := func(delta string) {
 		select {
 		case c.send <- []byte(delta):
 		case <-streamCtx.Done():
 		}
-	})
+	}
+	c.provider.SetDisplay(display)
 	c.provider.SetIterationBoundary(func() {
 		// A new assistant message begins: close the current bubble with a
 		// visible marker; the client opens the next one on the first
@@ -580,6 +583,32 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 			if partial := lastAssistantText(c.agent); partial != "" {
 				c.syncConversation(partial)
 			}
+			return
+		}
+		// Out of tool steps: the tool results are already in the
+		// conversation — one more forced generation (on a fresh context —
+		// the first one is canceled above) turns them into an answer
+		// instead of an error frame.
+		if errors.Is(err, core.ErrMaxIterations) {
+			c.enqueue(map[string]string{"status": "tool budget reached — forcing a final answer…"})
+			graceCtx, graceCancel := context.WithCancel(ctx)
+			defer graceCancel()
+			c.provider.ResetTurnCount()
+			c.provider.SetDisplay(func(delta string) {
+				select {
+				case c.send <- []byte(delta):
+				case <-graceCtx.Done():
+				}
+			})
+			text, err = c.agent.RunStream(graceCtx, graceFinalQuery)
+			c.provider.SetDisplay(nil)
+			graceCancel()
+			if err != nil {
+				c.enqueue(map[string]string{"error": err.Error()})
+				return
+			}
+			c.syncConversation(text)
+			c.enqueue(map[string]bool{"done": true})
 			return
 		}
 		c.enqueue(map[string]string{"error": err.Error()})
