@@ -33,6 +33,7 @@ structured tools.
 | `seedexecutor.go` | the tool registry as a seed `core.ToolExecutor` (run_command y/N gate via seed UI) |
 | `replevents.go` | seed events → REPL status lines (`tool →` / `← result:`) |
 | `tools.go` | helper tool registry (read_file, write_file, run_command, web_fetch), path sandbox, qwen tool-prompt/parse helpers, `/tools` command |
+| `runtime.go` | session tunables (max-steps/tokens/result-cap/timeout via env+flags), machine-context system prompt, persisted /tools state |
 | `skills.go` | user skills: JSON-defined fixed-command tools in `~/.sprout-local/skills/*.json`, loaded by `/tools` |
 | `apiserver.go` | `-serve` OpenAI-compatible API: `/v1/chat/completions` (stream + tool_calls) routed to any installed model, `/v1/models`, `/health` |
 | `modelcmd.go` | `/model`, `/models`, `/pull` slash commands: model switching, listing, cache eviction |
@@ -58,8 +59,12 @@ and `/tools` picks it up (fixed command line, no model-supplied params;
 installing the skill is the consent, so no per-call prompt). Skills run
 through the seed agent loop like built-ins.
 
-`replState.newAgent()` builds `core.Agent{Provider: sinterProvider,
-Executor: toolExecutor|NoopExecutor, UI: termUI, MaxIterations: 4}`.
+Tools on by default (`tools.json` remembers on/off/yolo; `-tools` overrides
+once). `replState.newAgent()` builds
+`core.Agent{Provider: sinterProvider, Executor: toolExecutor|NoopExecutor,
+UI: termUI, MaxIterations: maxToolSteps}`; the system prompt is the user's
+`-s`/`/system` text plus a machine-context note. Exhausted tool budget
+triggers one forced no-tools answer instead of `ErrMaxIterations`.
 `/model`, `/pull`, `/system`, `/tools` rebuild the agent with
 `ExportState`/`ImportState` carrying the conversation across. Tools off →
 `NoopExecutor`, so the model never sees the tool protocol. `SPROUT_LOCAL_SEED_DEBUG=1`
@@ -73,6 +78,8 @@ sprout-local             # interactive REPL
 sprout-local -p "question"    # one-shot: stream response and exit
 sprout-local -s "prompt"      # set a session system prompt
 sprout-local -m <model-dir>   # override the model directory
+sprout-local -tools on        # tool calling this session (on|off|yolo; default from tools.json, on when unset)
+sprout-local -max-steps 12    # tool round-trips per turn (default 8)
 sprout-local -no-log          # disable session logging
 sprout-local -pull            # list downloadable catalog models (RAM-tier annotated)
 sprout-local -pull <name>     # download from HuggingFace, then chat with it
@@ -84,12 +91,12 @@ sprout-local -serve -addr :8321  # custom listen address
 
 | Command | Purpose |
 |---------|---------|
-| `/new` | New conversation (drops history, keeps system prompt) |
-| `/system [text]` | Show or set the system prompt |
+| `/new` | New conversation (drops history, keeps system prompt); `/clear` is an alias |
+| `/system [text]` | Show or set the system prompt (machine context is appended automatically) |
 | `/model [ref]` | Show or switch the model (history kept; ref = dir name, catalog name, or path) |
 | `/models` | List installed models (`*` marks the session model) |
 | `/pull [name]` | Download a catalog model, switch to it, confirm with a greeting (bare `/pull` lists) |
-| `/tools [on\|off\|yolo]` | Toggle tool calling (read_file, write_file, run_command, web_fetch); `yolo` skips the run_command confirm |
+| `/tools [on\|off\|yolo]` | Toggle tool calling (read_file, write_file, run_command, web_fetch); the choice persists across sessions |
 | `/history` | Show the conversation so far |
 | `/exit` | Quit (also `/quit`, `/q`); Ctrl-D also exits |
 | `"""` | Open/close a multiline input block (like a heredoc) |
@@ -131,11 +138,13 @@ State layout (all under `~/.sprout-local/`, moved by
 
 ## Key Constants
 
-- `maxTokens = 2048` — generation token limit (chat needs more than commit messages)
+- `defaultMaxToolSteps = 8` — tool round-trips per user turn (`-max-steps`, `SPROUT_LOCAL_MAX_STEPS`); exhaustion forces a final answer instead of erroring
+- `defaultMaxTokens = 4096` — generation token limit (`-max-tokens`, `SPROUT_LOCAL_MAX_TOKENS`)
 - `temperature = 0.4` — a little more variety than gmitllm's 0.2
-- `maxToolSteps = 4` — seed agent iterations per user turn (tool round-trips)
+- `defaultToolResultCap = 6000` — per-tool-result characters fed to the model (`SPROUT_LOCAL_TOOL_RESULT_CAP`)
+- `defaultCommandTimeout = 30` — run_command timeout seconds (`SPROUT_LOCAL_COMMAND_TIMEOUT`)
 - `historyLimit = 200` — web-UI history cap; the REPL uses seed compaction instead
-- Tool sandbox: file tools stay under cwd + `/tmp`/`$TMPDIR`; run_command blocks shell metacharacters (`|;&\`` and redirects), 30s timeout
+- Tool sandbox: file tools stay under cwd + `/tmp`/`$TMPDIR`; run_command runs under `/bin/sh` when confirmed, shell-free with substitution chars refused in yolo; 30s default timeout
 
 ## Testing
 
@@ -169,6 +178,9 @@ https://github.com/sprout-foundry/sinter/issues/1.
 - **Text-protocol tool calls** — sinter has no structured tool API, so the provider renders seed's `Tools` into the qwen3.5 template's native `# Tools`/`<tool_call>`/`<tool_response>` text and parses calls back out; seed sees ordinary structured tool calls.
 - **In-process streaming** — sinter's `Generate` takes an onToken callback; each token is decoded and streamed through a filter that suppresses `<tool_call>` markup, while the parsed clean text enters seed state and logs.
 - **Full re-render per turn** — the entire message list goes through `FormatChat` each turn; sinter's prefix caching makes repeat prefixes cheap.
-- **Tools default off** — chat first, tools when asked. A 4B model spends tokens and attention on the protocol; `/tools on` opts in per session. Off means `NoopExecutor`, so the model never sees the tool prompt.
+- **Tools default on, choice persisted** — tools are the common case for "help me with my machine"; seed never mentions tools unless the executor is attached, so off sessions cost nothing. The on/off/yolo choice persists in `<stateRoot>/tools.json` (`-tools` overrides once at launch). Off still means `NoopExecutor`, so the model never sees the tool prompt.
+- **run_command speaks real shell when confirmed** — confirmed commands run under `/bin/sh` (pipes and quoting work; the y/N confirm of the literal command is the consent gate). `yolo` mode skips the shell: exec argv split with `; \` $` and newlines refused — no per-command approval there, so substitution stays off the table. Skills run shell-free too.
+- **Budget with a grace leg** — tool round-trips default to 8 (`-max-steps` / `SPROUT_LOCAL_MAX_STEPS`); when the budget runs out, the REPL and web UI send one forced no-tools "answer now" turn instead of aborting with `ErrMaxIterations`.
+- **Machine context in every system prompt** — OS, arch, shell, and cwd are appended (`environmentContext`), so small models stop guessing `ip addr` on macOS. `-s` text and the env note travel together.
 - **Session logs** — every exchange appends to `~/.sprout-local/sessions/`, so scrollback survives terminal loss.
 - **Download stays app-level** — sinter's README keeps the catalog separate from the engine "so apps can keep their own list"; the engine has no download API. The `hf` CLI mechanics (pipe draining, disk-based progress polling) are ported from sprout's `localmodel.EnsureModel`.

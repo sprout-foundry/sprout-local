@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -31,6 +32,12 @@ import (
 const (
 	historyLimit = 200 // hard cap on retained messages (100 turns)
 )
+
+// graceFinalQuery is the synthetic user message sent when a turn dies
+// with seed's ErrMaxIterations: it forces a final no-tools answer built
+// from the tool results already in the conversation, instead of surfacing
+// "max iterations reached" and leaving the user with nothing.
+const graceFinalQuery = "You are out of tool steps. Answer my original question now using what you already retrieved. Do not attempt any further tool calls."
 
 // currentGen tracks the in-flight generation so Ctrl-C can cancel it.
 type activeGen struct {
@@ -85,7 +92,31 @@ func main() {
 	flagServe := fs.Bool("serve", false, "Host the embedded web chat UI (WebSocket + sinter in-process)")
 	flagAddr := fs.String("addr", "127.0.0.1:8321", "Listen address for -serve")
 	flagVerbose := fs.Bool("v", false, "Verbose: show engine load/debug output")
+	flagTools := fs.String("tools", "", "Tool calling for this session: on, off, or yolo (overrides tools.json)")
+	flagMaxSteps := fs.Int("max-steps", 0, "Tool round-trips per user turn (default 8; env SPROUT_LOCAL_MAX_STEPS)")
+	flagMaxTokens := fs.Int("max-tokens", 0, "Generation token cap (default 4096; env SPROUT_LOCAL_MAX_TOKENS)")
 	fs.Parse(os.Args[1:])
+
+	initTunables()
+	if *flagMaxSteps > 0 {
+		maxToolSteps = *flagMaxSteps
+	}
+	if *flagMaxTokens > 0 {
+		maxTokens = *flagMaxTokens
+	}
+	loadToolsPreference()
+	if *flagTools != "" {
+		switch strings.ToLower(*flagTools) {
+		case "on":
+			toolsRequested, toolSafetyBypass = true, false
+		case "off":
+			toolsRequested, toolSafetyBypass = false, false
+		case "yolo":
+			toolsRequested, toolSafetyBypass = true, true
+		default:
+			log.Printf("ignoring -tools %q: want on, off, or yolo", *flagTools)
+		}
+	}
 
 	// Engine chatter (sinter load/warmup lines) is filtered out unless -v
 	// or CHATLLM_DEBUG is set. Installed before any model loads.
@@ -113,7 +144,7 @@ func main() {
 		}
 		dir := resolveModelDir()
 		if dir != "" {
-			go warmModel(dir, *flagSystem, toolsRequested, executor)
+			go warmModel(dir, effectiveSystemPrompt(*flagSystem), toolsRequested, executor)
 		}
 	}
 
@@ -172,7 +203,7 @@ func main() {
 
 	// One-shot mode: single completion, no REPL.
 	if *flagPrompt != "" {
-		runOneShot(*flagSystem, *flagPrompt, engine, modelPath)
+		runOneShot(effectiveSystemPrompt(*flagSystem), *flagPrompt, engine, modelPath)
 		return
 	}
 
@@ -325,15 +356,24 @@ func (u *termUI) Prompt(message string) (string, error) {
 	return strings.TrimSpace(line), err
 }
 
-// Confirm implements seed's y/N gate. Empty reply = no.
+// Confirm implements seed's y/N gate. "a" (always) approves and adds the
+// command word to the session allowlist, so `git status` only ever asks
+// once per session. Empty reply = no.
 func (u *termUI) Confirm(message string) (bool, error) {
-	fmt.Printf("%s [y/N] ", message)
+	fmt.Printf("%s [y/N/a] ", message)
 	line, err := u.reader.ReadString('\n')
 	if err != nil {
 		return false, err
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
+		return true, nil
+	case "a", "always":
+		if rest, found := strings.CutPrefix(message, "run command: "); found {
+			if cmd := strings.Fields(rest); len(cmd) > 0 {
+				sessionApprovedCommands = append(sessionApprovedCommands, cmd[0])
+			}
+		}
 		return true, nil
 	}
 	return false, nil
@@ -369,7 +409,7 @@ func (s *replState) rebuildAgent(carry bool) {
 		Provider:       s.provider,
 		Executor:       executor,
 		UI:             s.ui,
-		SystemPrompt:   s.systemPrompt,
+		SystemPrompt:   effectiveSystemPrompt(s.systemPrompt),
 		MaxIterations:  maxToolSteps,
 		EventPublisher: &replEvents{},
 		Debug:          os.Getenv("SPROUT_LOCAL_SEED_DEBUG") != "",
@@ -417,9 +457,25 @@ func runChatTurn(st *replState, userLine string) error {
 			fmt.Println("(cancelled — history unchanged)")
 			return nil
 		}
+		// Out of tool steps: don't end the turn on an error. The tool
+		// results are already in the conversation — one more forced
+		// generation turns them into an answer. If even that fails, the
+		// original error is reported.
+		if errors.Is(err, core.ErrMaxIterations) {
+			fmt.Printf("%s tool budget reached — forcing a final answer\n",
+				ansiStyle("Note:", ansiYellow))
+			text, err = st.agent.RunStream(streamCtx, graceFinalQuery)
+			printer.Close()
+			fmt.Println()
+			fmt.Printf("%s%s%s\n", ansiGray, st.metricsLine(), ansiReset)
+			if err != nil {
+				return err
+			}
+			logTurn(st, userLine, text)
+			return nil
+		}
 		return err
 	}
-
 	logTurn(st, userLine, text)
 	return nil
 }
@@ -618,7 +674,7 @@ func dispatchCommand(cmd, args string, st *replState) bool {
 	switch cmd {
 	case "exit", "quit", "q":
 		return true
-	case "new":
+	case "new", "clear":
 		st.newAgent() // fresh agent = fresh conversation state
 		fmt.Println("New conversation started.")
 	case "system":
@@ -653,9 +709,9 @@ func dispatchCommand(cmd, args string, st *replState) bool {
 func handleSystemCommand(args string, st *replState) {
 	if args == "" {
 		if st.systemPrompt == "" {
-			fmt.Println("No system prompt set.")
+			fmt.Println("No system prompt set (a machine-context note is still sent to the model).")
 		} else {
-			fmt.Printf("System prompt: %s\n", st.systemPrompt)
+			fmt.Printf("System prompt: %s\n(machine context is appended to this when talking to the model)\n", st.systemPrompt)
 		}
 		return
 	}
@@ -708,19 +764,21 @@ func printWelcome(engine, modelPath string) {
 
 func printHelp() {
 	fmt.Println("Commands:")
-	fmt.Println("  /new             Start a new conversation (drops history, keeps system prompt)")
+	fmt.Println("  /new, /clear     Start a new conversation (drops history, keeps system prompt)")
 	fmt.Println("  /system [text]   Show or set the system prompt")
 	fmt.Println("  /model [ref]     Show or switch the model (history is kept)")
 	fmt.Println("  /models          List installed models (* marks the session model)")
 	fmt.Println("  /pull [name]     Download a catalog model, switch to it (bare /pull lists)")
 	fmt.Println("  /history         Show the conversation so far")
-	fmt.Println("  /tools [on|off|yolo]  Toggle tool calling (read_file, write_file, run_command, web_fetch)")
+	fmt.Println("  /tools [on|off|yolo]  Toggle tool calling (read_file, write_file, run_command, web_fetch); remembered across sessions")
 	fmt.Println("  /exit            Quit (also /quit, /q)")
 	fmt.Println()
 	fmt.Println("Model refs: name under " + modelsRoot() + ", catalog name, or a path.")
 	fmt.Println(`Multiline: type """ alone on a line, type your text, end with """ on its own line.`)
 	fmt.Println(`One-shot:   chatllm -p "your question"`)
 	fmt.Println(`Web UI:     chatllm -serve [-addr 127.0.0.1:8321]`)
+	fmt.Println(`Tunables:   -max-steps N, -max-tokens N (also SPROUT_LOCAL_MAX_STEPS, SPROUT_LOCAL_MAX_TOKENS,`)
+	fmt.Println(`            SPROUT_LOCAL_TOOL_RESULT_CAP, SPROUT_LOCAL_COMMAND_TIMEOUT)`)
 }
 
 // errString safely extracts the message from an error.
