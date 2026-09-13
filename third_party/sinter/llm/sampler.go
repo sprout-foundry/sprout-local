@@ -159,6 +159,28 @@ func argmax(logits []float32) int {
 	return bestIdx
 }
 
+// repetitionPenaltyWindow returns the last repetitionPenaltyWindowTokens
+// of prompt-plus-generated — the window the repetition penalty scans.
+// Order matters: generated tokens come AFTER the prompt, so they survive
+// the tail crop even for long prompts. (An earlier version concatenated
+// the other way around, so any 64+-token prompt crowded every generated
+// token out of the window and the penalty never saw the loops it was
+// meant to break.) The window itself must comfortably exceed a typical
+// repeated paragraph: the failure mode is the model re-emitting a whole
+// block verbatim, and by the time the repeat starts, the block's own
+// tokens are the history the penalty needs to see. 64 only caught short
+// phrase loops; 256 covers paragraph-length repeats.
+func repetitionPenaltyWindow(tokenIDs, generated []int) []int {
+	all := append(append([]int(nil), tokenIDs...), generated...)
+	if len(all) > repetitionPenaltyWindowTokens {
+		return all[len(all)-repetitionPenaltyWindowTokens:]
+	}
+	return all
+}
+
+// repetitionPenaltyWindowTokens is the repeat-detection span (tokens).
+const repetitionPenaltyWindowTokens = 256
+
 // applyRepetitionPenalty penalizes tokens that have appeared in the recent
 // context. For each token in the context, if its logit is positive, divide it
 // by the penalty; if negative, multiply by the penalty. This follows the

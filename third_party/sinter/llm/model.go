@@ -1069,13 +1069,14 @@ func (m *Model) generateLocked(ctx context.Context, prompt string, genCfg Genera
 			break
 		}
 
-		// Build recent tokens for repetition penalty (last 64 tokens)
-		recentTokens := append(generated, tokenIDs...)
-		recentStart := len(recentTokens) - 64
-		if recentStart < 0 {
-			recentStart = 0
-		}
-		recent := recentTokens[recentStart:]
+		// Build recent tokens for the repetition penalty: the tail of
+		// prompt-plus-generated (see repetitionPenaltyWindow), so the window
+		// always includes the most recent generated tokens. The old code put
+		// generated FIRST (append(generated, tokenIDs...)), so any prompt of
+		// 64+ tokens — every real chat prompt — crowded all generated tokens
+		// out of the window and the penalty never saw the loop it was
+		// supposed to break.
+		recent := repetitionPenaltyWindow(tokenIDs, generated)
 
 		if useGPUArgmax {
 			if i == 1 {
