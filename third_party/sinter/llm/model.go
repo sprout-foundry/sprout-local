@@ -33,6 +33,14 @@ type Model struct {
 	mu        sync.Mutex
 	closed    bool
 
+	// lastPromptMs is the wall time of the last Generate call's prefill
+	// phase (time from prefill start to prefill completion, before the
+	// decode loop begins), in milliseconds. Written on the inference thread
+	// while m.mu is held (Generate locks m.mu for the whole call); read via
+	// LastPromptMs, which takes m.mu. Gives callers a prefill-vs-decode split
+	// without changing Generate's signature.
+	lastPromptMs int64
+
 	// Thinking-block state. Qwen3.5 emits <think>...</think> before the real
 	// answer when thinking is enabled (the default per its chat template).
 	// shouldFilterToken hides the block from callbacks unless ThinkingTokens
@@ -591,6 +599,12 @@ func (m *Model) generateLocked(ctx context.Context, prompt string, genCfg Genera
 		}
 		log.Printf("llm: prefill: path=%s tokens_processed=%d elapsed=%.2fs", path, processed, time.Since(prefillStart).Seconds())
 	}
+
+	// Capture the prefill wall time (prefill start → prefill completion,
+	// before the decode loop). Exposed via LastPromptMs so callers get a
+	// prefill-vs-decode split; written here while m.mu is held (Generate
+	// locks it for the whole call) and read under the same mutex.
+	m.lastPromptMs = time.Since(prefillStart).Milliseconds()
 
 	logGenMem("before-prefix-slot-bookkeeping")
 	// Snapshot the prompt-only K/V for the next request BEFORE decoding
@@ -1264,6 +1278,21 @@ func (m *Model) Config() ModelConfig { return m.cfg }
 func (m *Model) MTPAvailable() bool {
 	mtpArch, ok := m.arch.(MTPArchitecture)
 	return ok && mtpArch.MTPAvailable()
+}
+
+// LastPromptMs returns the wall time, in milliseconds, of the most recent
+// Generate call's prefill phase (prefill start to prefill completion, before
+// the decode loop). It is 0 before the first Generate. This gives callers a
+// prefill-vs-decode split without changing Generate's signature (Generate has
+// no metrics return): the value is written on the inference thread while
+// Generate holds m.mu for the whole call, and read here under the same
+// mutex, so it is race-free. A caller invoking LastPromptMs after Generate
+// returns sees a consistent value because Generate releases m.mu before
+// returning.
+func (m *Model) LastPromptMs() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastPromptMs
 }
 
 // ContextLength returns the effective context window the model can handle.

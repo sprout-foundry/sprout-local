@@ -39,6 +39,11 @@ type Qwen2 struct {
 	backend tensor.Backend
 	stream  tensor.Stream
 	weights *weights
+
+	// cd is the compiled decode closure state; nil unless
+	// PrepareCompiledDecode succeeded. MLX only — on the ggml backend the
+	// stub returns an error from PrepareCompiledDecode, so cd stays nil.
+	cd *compiledDecode
 }
 
 func New(cfg llm.ModelConfig, backend tensor.Backend) (llm.Architecture, error) {
@@ -211,6 +216,9 @@ func (q *Qwen2) FreeWeights() {
 	if q.weights == nil {
 		return
 	}
+	// Release the compiled decode closure (and its K/V buffers) before the
+	// weights it references, mirroring qwen35's FreeWeights ordering.
+	q.ReleaseCompiledDecode()
 	q.weights.embed.Free()
 	q.weights.normWeight.Free()
 	for i := range q.weights.layers {
@@ -313,14 +321,21 @@ func (q *Qwen2) ForwardDecodeArgmax(tokenID int, pos int, cache *llm.KVCache) (i
 // decodeInternal runs the forward pass for a single token, returning the raw
 // (BF16) logits array.
 func (q *Qwen2) decodeInternal(tokenID int, pos int, cache *llm.KVCache) (tensor.Array, error) {
-	s := q.stream
-
 	idData := []int64{int64(tokenID)}
 	idsArr, err := q.backend.NewArrayFromInt64(idData, []int{1, 1})
 	if err != nil {
 		return nil, fmt.Errorf("create ids: %w", err)
 	}
 	defer idsArr.Free()
+	return q.decodeInternalFromArray(idsArr, pos, cache)
+}
+
+// decodeInternalFromArray is decodeInternal's shared body, parameterized on
+// the token id array so the pipelined decode path (ForwardDecodeArgmaxArray)
+// can chain the previous step's still-unevaluated sampled token directly into
+// the embedding gather without a CPU readback.
+func (q *Qwen2) decodeInternalFromArray(idsArr tensor.Array, pos int, cache *llm.KVCache) (tensor.Array, error) {
+	s := q.stream
 
 	h, err := q.weights.embed.Lookup(idsArr, q.backend, s)
 	if err != nil {
@@ -353,6 +368,51 @@ func (q *Qwen2) decodeInternal(tokenID int, pos int, cache *llm.KVCache) (tensor
 	// Uint32Data in logitsToFloat32/logitsToArgmax) evaluates the lazy graph
 	// and synchronizes once. An extra sync here would cost ~5-10ms per token.
 	return q.computeLogits(h)
+}
+
+// ForwardDecodeArgmaxArray implements llm.PipelinedGreedyArchitecture. It
+// runs a single-token decode step whose input is the previous step's sampled
+// token as a [1,1] integer array (possibly still an unevaluated lazy graph
+// node), and returns the new argmax token as a [1,1] int64 array with
+// AsyncEval already called — same contract as qwen35's pipelined path.
+func (q *Qwen2) ForwardDecodeArgmaxArray(tokenArr tensor.Array, pos int, cache *llm.KVCache) (tensor.Array, error) {
+	logits, err := q.decodeInternalFromArray(tokenArr, pos, cache)
+	if err != nil {
+		return nil, err
+	}
+	defer logits.Free()
+
+	// logits is [1, 1, vocab]; ArgMax has no axis parameter and flattens the
+	// whole array, which for a [1,1,vocab] input is exactly the vocab
+	// argmax (see logitsToArgmax) — but the result is a 0-d scalar, so it
+	// needs reshaping back to [1,1] before it can serve as the next step's
+	// embedding-lookup ids.
+	idx, err := q.backend.ArgMax(logits, false, q.stream)
+	if err != nil {
+		return nil, fmt.Errorf("argmax: %w", err)
+	}
+
+	// Match the int64 dtype decodeInternal uses for ids (NewArrayFromInt64)
+	// so every step's embedding gather sees a consistent index dtype.
+	idx64, err := q.backend.AsType(idx, tensor.Int64, q.stream)
+	idx.Free()
+	if err != nil {
+		return nil, fmt.Errorf("argmax cast: %w", err)
+	}
+
+	next, err := q.backend.Reshape(idx64, []int{1, 1}, q.stream)
+	idx64.Free()
+	if err != nil {
+		return nil, fmt.Errorf("argmax reshape: %w", err)
+	}
+
+	// Dispatch this step's graph now instead of waiting for the caller to
+	// read it back — see PipelinedGreedyArchitecture.
+	if err := next.AsyncEval(); err != nil {
+		next.Free()
+		return nil, fmt.Errorf("async eval: %w", err)
+	}
+	return next, nil
 }
 
 // logitsToFloat32 casts a BF16 logits array to FP32 and reads it into a Go slice.

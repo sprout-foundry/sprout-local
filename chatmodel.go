@@ -285,8 +285,8 @@ func (t TurnMetrics) TPS() float64 {
 	return float64(t.GenTokens) / (float64(t.GenMs) / 1000)
 }
 
-// PP returns prompt tokens per second (0 when unknown — sinter does not
-// separate prefill timing, so pp tracks overall throughput until it does).
+// PP returns prompt tokens per second from sinter's reported prefill wall
+// time (LastPromptMs). 0 when unknown.
 func (t TurnMetrics) PP() float64 {
 	if t.PromptMs <= 0 || t.PromptTokens == 0 {
 		return 0
@@ -295,7 +295,8 @@ func (t TurnMetrics) PP() float64 {
 }
 
 // String renders a llama.cpp-style one-liner:
-// "pp 0.0 t/s · 12 gen · 38.5 t/s · ctx 240/262144".
+// "pp 3125.0 t/s · 49 tok · 29.3 t/s · ctx 563/128000" — prompt-processing
+// rate first (from sinter's prefill split), then decode.
 func (t TurnMetrics) String() string {
 	var b strings.Builder
 	if t.PP() > 0 {
@@ -338,6 +339,7 @@ func turnMetrics() TurnMetrics { return turnMetricsAcc }
 func addMetrics(a, b TurnMetrics) TurnMetrics {
 	return TurnMetrics{
 		PromptTokens: a.PromptTokens + b.PromptTokens,
+		PromptMs:     a.PromptMs + b.PromptMs,
 		GenTokens:    a.GenTokens + b.GenTokens,
 		GenMs:        a.GenMs + b.GenMs,
 		ContextUsed:  b.ContextUsed,
@@ -533,6 +535,7 @@ func runGeneration(
 
 	metrics = TurnMetrics{
 		PromptTokens: promptTokens,
+		PromptMs:     m.LastPromptMs(),
 		GenTokens:    genTokens,
 		GenMs:        elapsed.Milliseconds(),
 		ContextUsed:  promptTokens + genTokens,

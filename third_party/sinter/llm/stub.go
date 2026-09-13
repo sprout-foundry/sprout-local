@@ -6,6 +6,8 @@ package llm
 
 import (
 	"errors"
+
+	"github.com/sprout-foundry/sinter/tensor"
 )
 
 var errUnavailable = errors.New("llm: not available on this platform (requires Apple Silicon + mlx build tag)")
