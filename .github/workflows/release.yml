@@ -39,7 +39,7 @@ jobs:
           # Linux X64 runner: amd64 native; arm64 via GOARCH cross-compile
           # (pure-Go build under the ggml tag — no C cross-toolchain needed).
           - { goos: linux, goarch: amd64, runner: [self-hosted, Linux, X64], cgo: '1' }
-          - { goos: linux, goarch: arm64, runner: [self-hosted, Linux, X64], cgo: '0' }
+          - { goos: linux, goarch: arm64, runner: [self-hosted, Linux, X64], cgo: '1' }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +49,25 @@ jobs:
         with:
           go-version: '1.25'
           cache: false
+
+      # sinter's MLX cgo bindings need Apple MLX headers/libs under
+      # /opt/homebrew. Install when missing so any Mac runner self-heals.
+      - name: Ensure Apple MLX (darwin only)
+        if: matrix.goos == 'darwin'
+        run: |
+          test -f /opt/homebrew/include/mlx/c/array.h || brew install mlx
+          test -f /opt/homebrew/include/mlx/c/array.h
+
+      # linux/arm64 cross-compiles from the X64 runner: runtime/cgo needs an
+      # arm64 C compiler even though our own code compiles no C.
+      - name: Ensure arm64 cross-compiler (linux/arm64 only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        run: |
+          command -v aarch64-linux-gnu-gcc >/dev/null || \
+            sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+      - name: Set CC for linux/arm64 cross
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        run: echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
         env:
