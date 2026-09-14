@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sprout-foundry/sinter/llm"
 )
@@ -65,7 +66,8 @@ type toolParam struct {
 }
 
 // toolRegistry is the session's tool set. Deterministic order (read →
-// write → run → fetch) keeps the prompt stable for sinter's prefix cache.
+// write → edit → list → info → run → fetch) keeps the prompt stable for
+// sinter's prefix cache.
 var toolRegistry = []toolSpec{
 	{
 		name:        "read_file",
@@ -85,9 +87,35 @@ var toolRegistry = []toolSpec{
 		run: toolRunWriteFile,
 	},
 	{
+		name:        "edit_file",
+		description: "Replace text in an existing file. old_text must match exactly and appear exactly once; new_text replaces it. Use empty new_text to delete.",
+		parameters: []toolParam{
+			{name: "path", typeName: "string", description: "File path", required: true},
+			{name: "old_text", typeName: "string", description: "Exact text to find", required: true},
+			{name: "new_text", typeName: "string", description: "Replacement text; empty deletes old_text", required: false},
+		},
+		run: toolRunEditFile,
+	},
+	{
+		name:        "list_dir",
+		description: "List a directory's contents. Directories first (trailing /), then files with sizes.",
+		parameters: []toolParam{
+			{name: "path", typeName: "string", description: "Directory to list (default: current directory)", required: false},
+		},
+		run: toolRunListDir,
+	},
+	{
+		name:        "file_info",
+		description: "Check whether a path exists and report its type, size, and modified time without reading it.",
+		parameters: []toolParam{
+			{name: "path", typeName: "string", description: "Path to check", required: true},
+		},
+		run: toolRunFileInfo,
+	},
+	{
 		name: "run_command",
 		description: "Run one shell command via /bin/sh and return stdout+stderr combined. " +
-			"Pipes and quoted arguments work, so `ifconfig | grep inet` is fine. " +
+			"Pipes and quoted arguments work when the user confirms the command, e.g. `ifconfig | grep inet`. " +
 			"For quick lookups (ls, cat, grep, git status, ifconfig, …). " +
 			"Chaining with ; & && || and file redirects (>, >>, <, <<) are not available — " +
 			"stderr is captured automatically, so no 2>/dev/null is needed. " +
@@ -771,19 +799,25 @@ func toolRunReadFile(ctx context.Context, args map[string]string) (string, error
 	return s, nil
 }
 
+// unescapeModelText normalizes model-supplied text: templates emit raw
+// newlines for multi-line values, but some models stringify the whole
+// value with "\n" escapes — those are unquoted when the text has no
+// literal newline.
+func unescapeModelText(s string) string {
+	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
+		if unquoted, err := strconv.Unquote(`"` + s + `"`); err == nil {
+			return unquoted
+		}
+	}
+	return s
+}
+
 func toolRunWriteFile(ctx context.Context, args map[string]string) (string, error) {
 	path, err := resolveToolPath(args["path"])
 	if err != nil {
 		return "", err
 	}
-	content := args["content"]
-	// Templates emit raw newlines for multi-line values; accept JSON-style
-	// "\n" escapes too (some models stringify the whole value).
-	if !strings.Contains(content, "\n") && strings.Contains(content, `\n`) {
-		if unquoted, err := strconv.Unquote(`"` + content + `"`); err == nil {
-			content = unquoted
-		}
-	}
+	content := unescapeModelText(args["content"])
 	// Models say "create folder X with files" and write into X/ directly —
 	// create missing parent directories instead of failing.
 	if dir := filepath.Dir(path); dir != "." {
@@ -795,6 +829,134 @@ func toolRunWriteFile(ctx context.Context, args map[string]string) (string, erro
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+}
+
+// toolRunEditFile replaces one exact occurrence of old_text with new_text.
+// Counting matches first keeps a sloppy match from corrupting an innocent
+// second location: zero matches and multiple matches are both errors the
+// model can self-correct from (re-read, widen the context).
+func toolRunEditFile(ctx context.Context, args map[string]string) (string, error) {
+	path, err := resolveToolPath(args["path"])
+	if err != nil {
+		return "", err
+	}
+	oldText := unescapeModelText(args["old_text"])
+	newText := unescapeModelText(args["new_text"]) // may be empty: deletes
+	if oldText == "" {
+		return "", fmt.Errorf("old_text is empty")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	content := string(b)
+	switch n := strings.Count(content, oldText); {
+	case n == 0:
+		return "", fmt.Errorf("old_text not found in %s — read the file first and copy the text exactly", path)
+	case n > 1:
+		return "", fmt.Errorf("old_text matches %d times in %s — include more surrounding lines to make it unique", n, path)
+	}
+	edited := strings.Replace(content, oldText, newText, 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("edited %s: replaced %d chars with %d chars", path, len(oldText), len(newText)), nil
+}
+
+// listDirEntryCap bounds how many entries list_dir reports. Bigger
+// listings flood the context window; the …more line tells the model to
+// narrow the path instead.
+const listDirEntryCap = 200
+
+// toolRunListDir lists a directory: directories first (trailing /), then
+// files with sizes, each group alphabetical case-insensitively.
+func toolRunListDir(ctx context.Context, args map[string]string) (string, error) {
+	p := strings.TrimSpace(args["path"])
+	if p == "" {
+		p = "."
+	}
+	path, err := resolveToolPath(p)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return "", err
+	}
+	// Count over all entries so the summary stays truthful when the
+	// display is capped.
+	dirs, files := 0, 0
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs++
+		} else {
+			files++
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		idir, jdir := entries[i].IsDir(), entries[j].IsDir()
+		if idir != jdir {
+			return idir // directories first
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if len(lines) >= listDirEntryCap {
+			break
+		}
+		if e.IsDir() {
+			lines = append(lines, e.Name()+"/")
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			lines = append(lines, e.Name())
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s (%d bytes)", e.Name(), info.Size()))
+	}
+	if len(entries) > listDirEntryCap {
+		lines = append(lines, fmt.Sprintf("…[%d more entries]", len(entries)-listDirEntryCap))
+	}
+	if len(lines) == 0 {
+		return "(empty directory)", nil
+	}
+	return fmt.Sprintf("%d directories, %d files\n%s", dirs, files, truncateToolResult(strings.Join(lines, "\n"))), nil
+}
+
+// toolRunFileInfo stats a path without reading it. A missing path is a
+// normal answer (useful to the model), not a Go error.
+func toolRunFileInfo(ctx context.Context, args map[string]string) (string, error) {
+	path, err := resolveToolPath(args["path"])
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "does not exist: " + path, nil
+		}
+		return "", err
+	}
+	mod := info.ModTime().Format(time.RFC3339)
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "symlink", nil
+		}
+		return fmt.Sprintf("symlink -> %s", target), nil
+	case info.IsDir():
+		if entries, err := os.ReadDir(path); err == nil {
+			return fmt.Sprintf("directory, %d entries, modified %s", len(entries), mod), nil
+		}
+		return fmt.Sprintf("directory, modified %s", mod), nil
+	case info.Mode().IsRegular():
+		return fmt.Sprintf("file, %d bytes, modified %s", info.Size(), mod), nil
+	default:
+		return fmt.Sprintf("other (%s)", info.Mode().String()), nil
+	}
 }
 
 // commandDenyChars are the characters refused in yolo mode (no per-command

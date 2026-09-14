@@ -32,7 +32,7 @@ structured tools.
 | `seedprovider.go` | sinter as a seed `core.Provider`: render seed messages → qwen tool protocol, parse `<tool_call>` text back into structured calls |
 | `seedexecutor.go` | the tool registry as a seed `core.ToolExecutor` (run_command y/N gate via seed UI) |
 | `replevents.go` | seed events → REPL status lines (`tool →` / `← result:`) |
-| `tools.go` | helper tool registry (read_file, write_file, run_command, web_fetch), path sandbox, qwen tool-prompt/parse helpers, `/tools` command |
+| `tools.go` | helper tool registry (read_file, write_file, edit_file, list_dir, file_info, run_command, web_fetch), path sandbox, qwen tool-prompt/parse helpers, `/tools` command |
 | `runtime.go` | session tunables (max-steps/tokens/result-cap/timeout via env+flags), machine-context system prompt, persisted /tools state |
 | `skills.go` | user skills: JSON-defined fixed-command tools in `~/.sprout-local/skills/*.json`, loaded by `/tools` |
 | `apiserver.go` | `-serve` OpenAI-compatible API: `/v1/chat/completions` (stream + tool_calls) routed to any installed model, `/v1/models`, `/health` |

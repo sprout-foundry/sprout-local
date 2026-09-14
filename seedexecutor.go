@@ -118,7 +118,7 @@ func (e *toolExecutor) run(ctx context.Context, name string, args map[string]str
 
 	if spec := lookupToolSpec(name); spec != nil {
 		res, err := e.runSpec(ctx, spec, args, name)
-		if err == nil && truncated && (name == "write_file" || name == "read_file") {
+		if err == nil && truncated && (name == "write_file" || name == "read_file" || name == "edit_file") {
 			res += "\n(note: recovered from a truncated tool call — the content may be incomplete; offer to continue it)"
 		}
 		return res, err

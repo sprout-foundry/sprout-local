@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExtractToolCalls(t *testing.T) {
@@ -237,6 +239,219 @@ func TestToolStreamFilterSeedBuffer(t *testing.T) {
 		}
 		if !strings.Contains(sink, "Check.") || !strings.Contains(sink, "Done.") {
 			t.Errorf("%s lost prose: %q", sink, sink)
+		}
+	}
+}
+
+// ─── edit_file / list_dir / file_info ────────────────────────────────────
+
+// TestToolRunEditFile covers the happy path, both self-correcting error
+// cases, deletion via empty new_text, and escaped-newline unescaping.
+func TestToolRunEditFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Happy path: single exact match.
+	write("alpha\nbeta\ngamma\n")
+	got, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": "beta", "new_text": "BETA",
+	})
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if !strings.Contains(got, "edited") {
+		t.Errorf("result = %q", got)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "alpha\nBETA\ngamma\n" {
+		t.Errorf("content after edit = %q", b)
+	}
+
+	// Not found → actionable error, file untouched.
+	write("one two three\n")
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": "four", "new_text": "x",
+	}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("not-found err = %v", err)
+	}
+
+	// Two matches → must refuse, not pick one.
+	write("dup here\ndup here\n")
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": "dup", "new_text": "x",
+	}); err == nil || !strings.Contains(err.Error(), "2 times") {
+		t.Errorf("two-match err = %v", err)
+	}
+
+	// Empty new_text deletes old_text.
+	write("keep [REMOVE ME] keep\n")
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": "[REMOVE ME] ", "new_text": "",
+	}); err != nil {
+		t.Fatalf("delete edit: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "keep keep\n" {
+		t.Errorf("content after delete = %q", b)
+	}
+
+	// Models sometimes send "\\n" escapes for multi-line values.
+	write("start\nend\n")
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": `start\nend`, "new_text": "done",
+	}); err != nil {
+		t.Fatalf("escaped edit: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "done\n" {
+		t.Errorf("content after escaped edit = %q", b)
+	}
+
+	// Missing file.
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": filepath.Join(dir, "nope.txt"), "old_text": "a", "new_text": "b",
+	}); err == nil {
+		t.Error("missing file: want error, got nil")
+	}
+
+	// Empty old_text is refused up front.
+	write("content\n")
+	if _, err := toolRunEditFile(context.Background(), map[string]string{
+		"path": path, "old_text": "", "new_text": "x",
+	}); err == nil || !strings.Contains(err.Error(), "old_text is empty") {
+		t.Errorf("empty old_text err = %v", err)
+	}
+}
+
+// TestToolRunEditFileSandbox verifies the sandbox gate applies to edits.
+func TestToolRunEditFileSandbox(t *testing.T) {
+	for _, p := range []string{"/etc/hosts", "../../etc/hosts"} {
+		if _, err := toolRunEditFile(context.Background(), map[string]string{
+			"path": p, "old_text": "localhost", "new_text": "x",
+		}); err == nil || !strings.Contains(err.Error(), "sandbox") {
+			t.Errorf("path %q: err = %v, want sandbox refusal", p, err)
+		}
+	}
+}
+
+// TestToolRunListDir checks dirs-first ordering, size rendering, the
+// default-to-cwd behavior, and the missing-path error.
+func TestToolRunListDir(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "zsub"), 0o755)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("12345"), 0o644)    // 5 bytes
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("12345678"), 0o644) // 8 bytes
+	os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0o644)
+
+	got, err := toolRunListDir(context.Background(), map[string]string{"path": dir})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	wantOrder := []string{"zsub/", ".hidden (1 bytes)", "a.txt (8 bytes)", "b.txt (5 bytes)"}
+	lines := strings.Split(got, "\n")
+	if len(lines) != len(wantOrder)+1 { // + summary line
+		t.Fatalf("got %d lines: %q", len(lines), got)
+	}
+	for i, w := range wantOrder {
+		if lines[i+1] != w {
+			t.Errorf("line %d = %q, want %q", i+1, lines[i+1], w)
+		}
+	}
+	if !strings.Contains(lines[0], "1 directories") || !strings.Contains(lines[0], "3 files") {
+		t.Errorf("summary = %q", lines[0])
+	}
+
+	// Empty path lists the cwd (sandboxed to the process wd, whatever it is).
+	if _, err := toolRunListDir(context.Background(), map[string]string{"path": ""}); err != nil {
+		t.Errorf("default path: %v", err)
+	}
+
+	// Missing directory.
+	if _, err := toolRunListDir(context.Background(), map[string]string{
+		"path": filepath.Join(dir, "nope"),
+	}); err == nil {
+		t.Error("missing dir: want error, got nil")
+	}
+}
+
+// TestToolRunListDirCap verifies the 200-entry cap and …more line.
+func TestToolRunListDirCap(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 205; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d", i)), nil, 0o644)
+	}
+	got, err := toolRunListDir(context.Background(), map[string]string{"path": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(got, "\n"); n != listDirEntryCap+1 { // + summary
+		t.Errorf("line count = %d, want %d", n, listDirEntryCap+1)
+	}
+	if !strings.Contains(got, "…[5 more entries]") {
+		t.Errorf("missing …more line: %q", got)
+	}
+}
+
+// TestToolRunFileInfo covers file/dir/missing/symlink answers. A missing
+// path is a result, not a Go error — the answer is useful to the model.
+func TestToolRunFileInfo(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f.txt")
+	os.WriteFile(file, []byte("hello"), 0o644)
+
+	got, err := toolRunFileInfo(context.Background(), map[string]string{"path": file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "file, 5 bytes") {
+		t.Errorf("file info = %q", got)
+	}
+	if _, err := time.Parse(time.RFC3339, got[strings.LastIndex(got, " ")+1:]); err != nil {
+		t.Errorf("mtime not RFC3339: %q", got)
+	}
+
+	got, err = toolRunFileInfo(context.Background(), map[string]string{"path": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "directory, 1 entries") {
+		t.Errorf("dir info = %q", got)
+	}
+
+	got, err = toolRunFileInfo(context.Background(), map[string]string{
+		"path": filepath.Join(dir, "missing"),
+	})
+	if err != nil {
+		t.Fatalf("missing path should not be a Go error: %v", err)
+	}
+	if !strings.Contains(got, "does not exist") {
+		t.Errorf("missing info = %q", got)
+	}
+
+	link := filepath.Join(dir, "link")
+	os.Symlink(file, link)
+	got, err = toolRunFileInfo(context.Background(), map[string]string{"path": link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "symlink -> "+file) {
+		t.Errorf("symlink info = %q", got)
+	}
+}
+
+// TestToolRegistryOrder pins the deterministic registry order — sinter's
+// prefix cache depends on it staying stable.
+func TestToolRegistryOrder(t *testing.T) {
+	want := []string{"read_file", "write_file", "edit_file", "list_dir", "file_info", "run_command", "web_fetch"}
+	if len(toolRegistry) != len(want) {
+		t.Fatalf("registry has %d tools, want %d", len(toolRegistry), len(want))
+	}
+	for i, name := range want {
+		if toolRegistry[i].name != name {
+			t.Errorf("registry[%d] = %q, want %q", i, toolRegistry[i].name, name)
 		}
 	}
 }
