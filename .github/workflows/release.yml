@@ -96,6 +96,9 @@ jobs:
           # major version the installed CLT understands (26.x here).
           TAGS=""
           SDKFIX=""
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            TAGS="-tags ggml"
+          fi
           if [ "${{ matrix.goos }}" = "darwin" ]; then
             NEWEST="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk 2>/dev/null | sed 's/.*MacOSX//;s/\.sdk//' | grep -E '^[0-9]+(\.[0-9]+)?$' | sort -t. -k1,1n -k2,2n | awk -F. '$1 < 27' | tail -1)"
             if [ -n "$NEWEST" ] && [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX${NEWEST}.sdk" ]; then
