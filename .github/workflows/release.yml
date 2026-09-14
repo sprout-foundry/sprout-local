@@ -90,10 +90,20 @@ jobs:
           GOCACHE: ${{ runner.temp }}/gocache
         run: |
           # linux needs the ggml tag (llm's cgo constraint includes it);
-          # darwin (MLX) builds with no extra tags.
+          # darwin (MLX) builds with no extra tags. On the Mac runner, the
+          # default SDK (MacOSX27.0) carries tbd files the runner's older
+          # Apple linker can't parse — pin SDKROOT to the newest SDK whose
+          # major version the installed CLT understands (26.x here).
           TAGS=""
-          [ "${{ matrix.goos }}" = "linux" ] && TAGS="-tags ggml"
-          go build $TAGS -trimpath -ldflags "-s -w" \
+          SDKFIX=""
+          if [ "${{ matrix.goos }}" = "darwin" ]; then
+            NEWEST="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk 2>/dev/null | sed 's/.*MacOSX//;s/\.sdk//' | grep -E '^[0-9]+(\.[0-9]+)?$' | sort -t. -k1,1n -k2,2n | awk -F. '$1 < 27' | tail -1)"
+            if [ -n "$NEWEST" ] && [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX${NEWEST}.sdk" ]; then
+              SDKFIX="SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX${NEWEST}.sdk"
+              echo "Pinning SDKROOT to MacOSX${NEWEST}.sdk"
+            fi
+          fi
+          env $SDKFIX go build $TAGS -trimpath -ldflags "-s -w" \
             -o "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}" .
 
       - name: Smoke test (binary runs on this machine)
