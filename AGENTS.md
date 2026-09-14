@@ -79,7 +79,7 @@ sprout-local -p "question"    # one-shot: stream response and exit
 sprout-local -s "prompt"      # set a session system prompt
 sprout-local -m <model-dir>   # override the model directory
 sprout-local -tools on        # tool calling this session (on|off|yolo; default from tools.json, on when unset)
-sprout-local -max-steps 12    # tool round-trips per turn (default 8)
+sprout-local -max-steps 12    # tool round-trips per turn (default 100)
 sprout-local -no-log          # disable session logging
 sprout-local -pull            # list downloadable catalog models (RAM-tier annotated)
 sprout-local -pull <name>     # download from HuggingFace, then chat with it
@@ -138,7 +138,7 @@ State layout (all under `~/.sprout-local/`, moved by
 
 ## Key Constants
 
-- `defaultMaxToolSteps = 8` — tool round-trips per user turn (`-max-steps`, `SPROUT_LOCAL_MAX_STEPS`); exhaustion forces a final answer instead of erroring
+- `defaultMaxToolSteps = 100` — tool round-trips per user turn (`-max-steps`, `SPROUT_LOCAL_MAX_STEPS`); exhaustion forces a final answer instead of erroring
 - `defaultMaxTokens = 4096` — generation token limit (`-max-tokens`, `SPROUT_LOCAL_MAX_TOKENS`)
 - `temperature = 0.4` — a little more variety than gmitllm's 0.2
 - `defaultToolResultCap = 6000` — per-tool-result characters fed to the model (`SPROUT_LOCAL_TOOL_RESULT_CAP`)

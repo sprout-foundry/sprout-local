@@ -93,7 +93,7 @@ func main() {
 	flagAddr := fs.String("addr", "127.0.0.1:8321", "Listen address for -serve")
 	flagVerbose := fs.Bool("v", false, "Verbose: show engine load/debug output")
 	flagTools := fs.String("tools", "", "Tool calling for this session: on, off, or yolo (overrides tools.json)")
-	flagMaxSteps := fs.Int("max-steps", 0, "Tool round-trips per user turn (default 8; env SPROUT_LOCAL_MAX_STEPS)")
+	flagMaxSteps := fs.Int("max-steps", 0, "Tool round-trips per user turn (default 100; env SPROUT_LOCAL_MAX_STEPS)")
 	flagMaxTokens := fs.Int("max-tokens", 0, "Generation token cap (default 4096; env SPROUT_LOCAL_MAX_TOKENS)")
 	fs.Parse(os.Args[1:])
 

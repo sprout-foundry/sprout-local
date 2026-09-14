@@ -39,8 +39,9 @@ const (
 	// that keeps calling tools can't loop forever (or burn the token
 	// budget). Default raised from 4: with self-correcting errors, a
 	// lookup usually needs 1–2 steps and a broken first guess shouldn't
-	// kill the turn.
-	defaultMaxToolSteps = 8
+	// kill the turn. 100 = effectively "until the model stops on its
+	// own"; the graceful-exhaustion path still bounds a runaway.
+	defaultMaxToolSteps = 100
 	// defaultToolResultCap bounds each tool result fed back to the model.
 	defaultToolResultCap = 6000 // characters
 	// defaultCommandTimeout bounds run_command executions, in seconds.
