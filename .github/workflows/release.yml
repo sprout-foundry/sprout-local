@@ -55,6 +55,14 @@ jobs:
       - name: Ensure Apple MLX (darwin only)
         if: matrix.goos == 'darwin'
         run: |
+          # Non-interactive shells don't source .zprofile, so brew isn't on
+          # PATH even after install. /opt/homebrew/bin is its only location
+          # on Apple Silicon.
+          export PATH="/opt/homebrew/bin:$PATH"
+          command -v brew >/dev/null || {
+            echo "Homebrew not found at /opt/homebrew/bin/brew — install it on this runner."
+            exit 1
+          }
           test -f /opt/homebrew/include/mlx/c/array.h || brew install mlx
           test -f /opt/homebrew/include/mlx/c/array.h
 
