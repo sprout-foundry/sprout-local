@@ -17,6 +17,7 @@ fi
 log_info()    { printf '%b[INFO]%b %s\n' "$BLUE" "$NC" "$1"; }
 log_success() { printf '%b[SUCCESS]%b %s\n' "$GREEN" "$NC" "$1"; }
 log_error()   { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$1" >&2; }
+log_warn()    { printf '%b[WARN]%b %s\n' "$YELLOW" "$NC" "$1"; }
 
 REPO="sprout-foundry/sprout-local"
 BINARY="sprout-local"
@@ -38,7 +39,7 @@ need() {
         }
     done
 }
-need curl tar awk grep unzip
+need curl tar awk grep
 
 # ── platform ────────────────────────────────────────────────────────────
 OS=$(uname -s)
@@ -50,7 +51,20 @@ case "$OS" in
 esac
 case "$ARCH" in
     arm64|aarch64) arch="arm64" ;;
-    x86_64|amd64)  arch="amd64" ;;
+    x86_64|amd64)
+        # No Intel build exists (the engine is Apple Silicon only). An x86_64
+        # Mac is almost certainly Apple Silicon running this script under
+        # Rosetta (e.g. curl installed as an x86_64 process) — install the
+        # arm64 binary, which runs natively. Refuse only if Rosetta isn't
+        # actually present, i.e. genuinely Intel hardware.
+        if [ "$OS" = "Darwin" ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]; then
+            arch="arm64"
+            log_info "x86_64 shell under Rosetta — installing the arm64 build (native on this machine)."
+        else
+            log_error "Intel Macs are not supported: the inference engine requires Apple Silicon."
+            exit 1
+        fi
+        ;;
     *) log_error "unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
@@ -65,14 +79,14 @@ if [ -z "$VERSION" ]; then
     VERSION=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}')
     [ -n "$VERSION" ] || { log_error "GitHub API returned no tag_name."; exit 1; }
 fi
-log_info "Installing $BINARY $VERSION for $plat/$arch…"
+log_info "Installing $BINARY $VERSION for ${plat}/${arch}…"
 
 # ── download + verify ──────────────────────────────────────────────────
 ASSET="${BINARY}-${plat}-${arch}.tar.gz"
 URL="https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
 TEMP_DIR=$(mktemp -d)
 
-log_info "Downloading $ASSET…"
+log_info "Downloading ${ASSET}…"
 curl -fsSL --progress-bar -o "$TEMP_DIR/$ASSET" "$URL"
 
 if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
