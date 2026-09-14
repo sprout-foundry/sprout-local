@@ -92,6 +92,7 @@
     }
     select:hover, button:hover { border-color: var(--accent); }
     select { max-width: 16rem; }
+    select:invalid, select option[value=""] { color: var(--sec); }
     .icon-btn { padding: .38rem .5rem; line-height: 1; }
 
     /* ── thread ─────────────────────────────────────────────────────── */
@@ -267,6 +268,10 @@
     }
 
     /* ── first-run "get a model" panel ───────────────────────────────── */
+    /* [hidden] must win over the display rule below: this panel is
+       toggled via the hidden attribute, and without the guard the
+       flex rule keeps it permanently visible. */
+    #get-model[hidden] { display: none; }
     #get-model {
       flex: 1; overflow-y: auto; display: flex; flex-direction: column;
       align-items: center; justify-content: flex-start; padding: 2.2rem 1.2rem;
@@ -682,7 +687,9 @@
       }
 
       // ── tools toggle ─────────────────────────────────────────────────
-      var toolsOn = localStorage.getItem('chatllm-tools') === 'on';
+      // Default matches the server's tools-on default; the choice persists
+      // in localStorage across sessions.
+      var toolsOn = localStorage.getItem('chatllm-tools') !== 'off';
       var toolsBtn = qs('#tools-toggle');
       function renderToolsBtn() {
         toolsBtn.style.background = toolsOn ? 'var(--accent)' : '';
@@ -1073,11 +1080,23 @@
             modelSelect._changeBound = true;
           }
           // No models installed → surface the download panel instead of an
-          // empty picker (a fresh machine otherwise has no way in).
+          // empty picker (a fresh machine otherwise has no way in), and
+          // swap the welcome hero for it so the empty state isn't doubled.
           if (models.length === 0 && !data.default) {
+            var hero = qs('#empty');
+            if (hero && hero.parentNode) { hero.parentNode.removeChild(hero); }
             loadGetModelPanel();
           } else {
             getModel.hidden = true;
+          }
+          // Placeholder so an empty picker isn't a tiny blank dropdown.
+          if (!modelSelect.options.length) {
+            var opt = document.createElement('option');
+            opt.value = "";
+            opt.textContent = '(no models yet)';
+            opt.disabled = true;
+            opt.selected = true;
+            modelSelect.appendChild(opt);
           }
         }).catch(function () {
           // A transient /models failure must not hide the picker we already

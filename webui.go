@@ -444,6 +444,15 @@ func (s *webServer) startConversation(c *wsClient) {
 	c.enqueue(map[string]any{"conv": c.conv.ID, "conversations": listConversations()})
 }
 
+// pullInFlight serializes handlePull: hf downloads to a shared models root,
+// and two concurrent pulls of the same (or any) model race on the same
+// destination. A download can take minutes; the UI disables its own buttons
+// but a second tab (or a refresh mid-download) would happily start another.
+var pullMu struct {
+	sync.Mutex
+	active bool
+}
+
 // handlePull downloads a catalog model (name or unique prefix) into the
 // shared models root, then refreshes the model listing. Runs in the
 // connection's read loop, so a slow download blocks further frames —
@@ -456,6 +465,19 @@ func (s *webServer) handlePull(c *wsClient, name string) {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
 	}
+	pullMu.Lock()
+	if pullMu.active {
+		pullMu.Unlock()
+		c.enqueue(map[string]string{"error": "a model download is already running — wait for it to finish"})
+		return
+	}
+	pullMu.active = true
+	pullMu.Unlock()
+	defer func() {
+		pullMu.Lock()
+		pullMu.active = false
+		pullMu.Unlock()
+	}()
 	dest, err := downloadModel(ctxBg(), m)
 	if err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
