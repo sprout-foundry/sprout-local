@@ -63,8 +63,12 @@ jobs:
             echo "Homebrew not found at /opt/homebrew/bin/brew — install it on this runner."
             exit 1
           }
-          test -f /opt/homebrew/include/mlx/c/array.h || brew install mlx
+          # sinter's cgo needs BOTH: mlx (libmlx C++ lib + C++ headers) and
+          # mlx-c (the stable C API: mlx/c/*.h, libmlxc).
+          brew install mlx mlx-c
           test -f /opt/homebrew/include/mlx/c/array.h
+          test -f /opt/homebrew/lib/libmlxc.dylib
+          test -f /opt/homebrew/lib/libmlx.dylib
 
       # linux/arm64 cross-compiles from the X64 runner: runtime/cgo needs an
       # arm64 C compiler even though our own code compiles no C.
