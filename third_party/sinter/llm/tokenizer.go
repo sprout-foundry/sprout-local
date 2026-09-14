@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -40,6 +41,20 @@ type Tokenizer struct {
 	// through the byte-level decoder corrupts it (é U+00E9 → byte 0xE9, č
 	// U+010D → byte 0x0D — mojibake in every accented word).
 	sentencePiece bool
+	// nfcNormalize marks a tokenizer whose HF pre_tokenizer pipeline runs a
+	// Unicode NFC normalizer before the split regex (Qwen3.8-style
+	// tokenizer.json: "normalizer": {"type": "NFC"}). Encoding normalizes
+	// input first so pre-tokens match the vocab the model was trained on.
+	nfcNormalize bool
+	// marksPreserveThinking is the chat-template family marker: the reference
+	// template renders history assistant turns as
+	// "<think>\n" + reasoning_content + "\n</think>\n\n" + content
+	// (preserved thinking) instead of the closed empty block, and the
+	// generation cue is an OPEN <think>\n (thinking on by default). Detected
+	// from the sibling tokenizer_config.json's pretokenize_regex — the 3.8
+	// regex drops \p{M} from the letter classes (3.5: [\p{L}\p{M}]+, 3.8:
+	// \p{L}+). See LoadTokenizer.
+	marksPreserveThinking bool
 }
 
 // BPEDecoder handles the BPE merge ranking
@@ -132,6 +147,21 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		tok.miniCPM5Stop = true
 	}
 
+	// Qwen3.8-style tokenizer detection. Two independent markers, both read
+	// from the tokenizer.json itself plus its sibling chat_template.jinja:
+	//   - NFC: "normalizer": {"type": "NFC"} in tokenizer.json (3.5 has no
+	//     normalizer). Applied before the split regex at encode time.
+	//   - preserve-thinking template family: the reference chat template
+	//     (shipped as chat_template.jinja in mlx-community conversions and
+	//     inline in tokenizer_config.json in official repos) carries the
+	//     preserve_thinking kwarg. NOTE: the pretokenize_regex is NOT a
+	//     reliable family marker — mlx-community 4-bit conversions of
+	//     Qwen3.8 keep the 3.5-shaped regex — but the chat template is the
+	//     actual behavior being detected.
+	tok.nfcNormalize = raw.NormalizerType == "NFC"
+	tok.marksPreserveThinking = detectPreserveThinkingTemplate(
+		filepath.Join(filepath.Dir(path), "chat_template.jinja"))
+
 	// Fallbacks
 	if tok.bosID == 0 {
 		tok.bosID = -1 // no BOS
@@ -158,11 +188,29 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	return tok, nil
 }
 
+// detectPreserveThinkingTemplate reads a chat_template.jinja file and
+// reports whether it carries the preserve-thinking family markers
+// (Qwen3.8's reference template: preserve_thinking kwarg + an open
+// <think>\n generation cue). ok=false when the file is missing or lacks
+// the markers (unknown → conservative default, 3.5-style template).
+func detectPreserveThinkingTemplate(tplPath string) bool {
+	data, err := os.ReadFile(tplPath)
+	if err != nil {
+		return false
+	}
+	tpl := string(data)
+	return strings.Contains(tpl, "preserve_thinking") &&
+		strings.Contains(tpl, "<think>")
+}
+
 // Encode converts a text string to a sequence of token IDs using BPE.
 // Special tokens (e.g. <|im_start|>, <|im_end|>) are recognized as single units.
 func (t *Tokenizer) Encode(text string) []int {
 	if len(text) == 0 {
 		return nil
+	}
+	if t.nfcNormalize {
+		text = nfcNormalize(text)
 	}
 
 	// Split text on special tokens, keeping them
@@ -549,6 +597,36 @@ func decodeByteLevel(s string) string {
 type hfTokenizer struct {
 	Model       hfModel        `json:"model"`
 	AddedTokens []hfAddedToken `json:"added_tokens"`
+	// NormalizerType captures the "type" of the pre-tokenization normalizer
+	// section ("NFC" on Qwen3.8-family exports; absent on 3.5). Nesting is
+	// flattened via the raw map so a Sequence normalizer's inner types don't
+	// matter — only the top-level marker is needed.
+	NormalizerType string `json:"-"`
+}
+
+func (h *hfTokenizer) UnmarshalJSON(data []byte) error {
+	// A normalizer section: either {"type": "NFC"} or
+	// {"type": "Sequence", "normalizers": [...]} — capture only a
+	// top-level NFC marker.
+	var raw struct {
+		Model      hfModel          `json:"model"`
+		AddedTokens []hfAddedToken  `json:"added_tokens"`
+		Normalizer *json.RawMessage `json:"normalizer"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	h.Model = raw.Model
+	h.AddedTokens = raw.AddedTokens
+	if raw.Normalizer != nil {
+		var norm struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(*raw.Normalizer, &norm) == nil {
+			h.NormalizerType = norm.Type
+		}
+	}
+	return nil
 }
 
 type hfModel struct {
@@ -620,6 +698,11 @@ func (t *Tokenizer) FormatChat(messages []ChatMessage) string {
 	if t.isMiniCPM5() {
 		return t.formatMiniCPM5Chat(messages)
 	}
+	if t.marksPreserveThinking {
+		// Qwen3.8 family: thinking on by default (open <think>\n cue),
+		// reasoning traces preserved in history.
+		return t.formatPreserveThinkingChat(messages, true)
+	}
 	return t.formatQwenChat(messages)
 }
 
@@ -683,6 +766,9 @@ func (t *Tokenizer) FormatChatPrefix(messages []ChatMessage) string {
 	}
 	if t.isMiniCPM5() {
 		return t.formatMiniCPM5Body(messages)
+	}
+	if t.marksPreserveThinking {
+		return t.formatPreserveThinkingBody(messages)
 	}
 	return t.formatQwenBody(messages)
 }
@@ -749,6 +835,39 @@ func (t *Tokenizer) formatQwenChat(messages []ChatMessage) string {
 	return t.formatQwenBody(messages) + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 }
 
+// formatPreserveThinkingBody renders messages per the Qwen3.8 reference
+// template (preserve_thinking=true, its default): history assistant turns
+// carry "<think>\n" + reasoning + "\n</think>\n\n" before the content —
+// the full reasoning trace stays in the prompt. Tool declarations/tools
+// prompt injection is the caller's (provider's) job, same as formatQwenBody.
+func (t *Tokenizer) formatPreserveThinkingBody(messages []ChatMessage) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		sb.WriteString("<|im_start|>")
+		sb.WriteString(msg.Role)
+		sb.WriteString("\n")
+		if msg.Role == "assistant" {
+			sb.WriteString("<think>\n")
+			sb.WriteString(strings.TrimSpace(msg.ReasoningContent))
+			sb.WriteString("\n</think>\n\n")
+		}
+		sb.WriteString(msg.Content)
+		sb.WriteString("<|im_end|>\n")
+	}
+	return sb.String()
+}
+
+// formatPreserveThinkingChat renders the full prompt including the
+// generation cue: an OPEN <think>\n when thinking is enabled (the
+// reference default — the model thinks and closes the block itself), or
+// the closed empty block when disabled (identical to the 3.5 cue).
+func (t *Tokenizer) formatPreserveThinkingChat(messages []ChatMessage, enableThinking bool) string {
+	if enableThinking {
+		return t.formatPreserveThinkingBody(messages) + "<|im_start|>assistant\n<think>\n"
+	}
+	return t.formatPreserveThinkingBody(messages) + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+}
+
 func (t *Tokenizer) formatQwenBody(messages []ChatMessage) string {
 	var sb strings.Builder
 	for _, msg := range messages {
@@ -768,6 +887,14 @@ func (t *Tokenizer) formatQwenBody(messages []ChatMessage) string {
 type ChatMessage struct {
 	Role    string // "system", "user", or "assistant"
 	Content string
+	// ReasoningContent is the assistant's thinking trace for this turn.
+	// Only used by preserve-thinking templates (Qwen3.8 family): history
+	// assistant turns render as "<think>\n" + ReasoningContent +
+	// "\n</think>\n\n" + Content, keeping the full reasoning trace in the
+	// prompt (the reference template's preserve_thinking=true default —
+	// better multi-turn decision consistency and KV-cache reuse). Ignored
+	// by the Qwen3.5/MiniCPM5/LFM2 empty-block templates and Gemma.
+	ReasoningContent string
 }
 
 // VocabSize returns the vocabulary size.

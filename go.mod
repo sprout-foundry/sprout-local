@@ -1,8 +1,8 @@
 module github.com/sprout-foundry/sprout-local
 
-go 1.25.6
+go 1.26.0
 
-require github.com/sprout-foundry/sinter v0.4.1
+require github.com/sprout-foundry/sinter v0.5.0
 
 require golang.org/x/sys v0.45.0
 
@@ -10,7 +10,9 @@ require github.com/gorilla/websocket v1.5.3
 
 require github.com/sprout-foundry/seed v1.4.0
 
-// Local copy of sinter, pinned verbatim to v0.4.1 (plus .gitignore). Kept
+require golang.org/x/text v0.42.0 // indirect
+
+// Local copy of sinter, pinned verbatim to v0.5.0 (plus .gitignore). Kept
 // vendored so the release pipeline builds from a fixed tree; resync with
 // rsync from a fresh upstream checkout when bumping the pin.
 replace github.com/sprout-foundry/sinter => ./third_party/sinter

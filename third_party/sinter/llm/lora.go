@@ -173,14 +173,18 @@ func loraTensorF32(a tensor.Array, b tensor.Backend, s tensor.Stream) ([]float32
 // dequant-to-Q4_0/Q8_0 / F32-transposed weight on non-native backends), so the
 // merged projection flows through the usual decode kernels untouched.
 //
-// `name` may be the base key or the "...weight" key; the base weight must be a
-// pre-quantized triplet present in sf (weight + scales, biases optional) and
-// an A/B pair present in a. Callers gate this on both conditions.
+// `name` may be the base key or the "...weight" key. When a is nil or the
+// base weight has no A/B pair in the adapter (not a LoRA target), the base
+// weight loads through the plain path — callers pass every projection here
+// and only genuine adapter targets pay the merge cost.
 func LoadLinearLora(sf *SafetensorsFile, name string, b tensor.Backend, s tensor.Stream, quant *QuantConfig, a *LoraAdapter) (*Linear, error) {
+	if a == nil {
+		return LoadLinear(sf, name, b, s, quant)
+	}
 	base := strings.TrimSuffix(name, ".weight")
 	pair, ok := a.Targets[base]
 	if !ok {
-		return nil, fmt.Errorf("lora %s: no adapter pair", base)
+		return LoadLinear(sf, name, b, s, quant)
 	}
 
 	groupSize := quant.GroupSize

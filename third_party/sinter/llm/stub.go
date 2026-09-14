@@ -21,10 +21,13 @@ type GenerateConfig struct {
 	TopK              int
 	RepetitionPenalty float32
 	ThinkingTokens    bool
+	EnableThinking    bool
+	ReasoningFn       func(chunk string)
 }
 type ChatMessage struct {
-	Role    string
-	Content string
+	Role             string
+	Content          string
+	ReasoningContent string
 }
 
 func NewModel(modelDir string) (*Model, error) { return nil, errUnavailable }

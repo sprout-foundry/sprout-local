@@ -128,7 +128,9 @@ func TestRecommendModelForRAM(t *testing.T) {
 		{16 * testGB, "qwen3.5-4b"},
 		{24 * testGB, "qwen3.5-9b"},
 		{32 * testGB, "qwen3.5-9b"},
-		{128 * testGB, "qwen3.5-9b"}, // 35b-a3b is never the unwarned default
+		{40 * testGB, "qwen3.5-9b"},
+		{48 * testGB, "qwen3.8-27b"},
+		{128 * testGB, "qwen3.8-27b"}, // 35b-a3b is never the unwarned default
 	}
 	for _, tc := range cases {
 		m := RecommendModelForRAM(tc.ram)
@@ -142,10 +144,11 @@ func TestRecommendModelForRAM(t *testing.T) {
 // blocked matrix requested: <8GB suggested=gemma4-e2b no stretch; 8-16GB
 // suggested=gemma4-e2b stretch=qwen3.5-4b; 16-24GB suggested=qwen3.5-4b
 // (gemma4-e2b now a safe downgrade, not blocked) stretch=qwen3.5-9b;
-// 24-32GB suggested=qwen3.5-9b no stretch; 32GB+ suggested=qwen3.5-9b
-// stretch=qwen3.6-35b-a3b. Anything smaller than suggested is always a
-// selectable (eligible) downgrade, never blocked — only tiers beyond the
-// one-up stretch are genuinely blocked.
+// 24-32GB suggested=qwen3.5-9b no stretch; 32-48GB suggested=qwen3.5-9b
+// stretch=qwen3.8-27b; 48GB+ suggested=qwen3.8-27b stretch=qwen3.6-35b-a3b.
+// Anything smaller than suggested is always a selectable (eligible)
+// downgrade, never blocked — only tiers beyond the one-up stretch are
+// genuinely blocked.
 func TestTieredCatalogForRAM(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -174,10 +177,13 @@ func TestTieredCatalogForRAM(t *testing.T) {
 			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierBlocked,
 		}},
 		{"32gb", 32 * testGB, map[string]TierStatus{
-			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.8-27b": TierStretch, "qwen3.6-35b-a3b": TierStretch,
+		}},
+		{"48gb", 48 * testGB, map[string]TierStatus{
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierEligible, "qwen3.8-27b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
 		}},
 		{"128gb", 128 * testGB, map[string]TierStatus{
-			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
+			"minicpm5-2b": TierEligible, "gemma4-e2b": TierEligible, "qwen3.5-4b": TierEligible, "qwen3.5-9b": TierEligible, "qwen3.8-27b": TierSuggested, "qwen3.6-35b-a3b": TierStretch,
 		}},
 	}
 	for _, tc := range cases {

@@ -79,6 +79,22 @@ var ModelCatalog = []CatalogModel{
 		MinRAMSuggested: 24 * gb,
 	},
 	{
+		// Qwen3.8-27B: dense 27B on the qwen3_5_text architecture (64
+		// layers, 48/16 DeltaNet heads, 24/4 GQA head_dim 256, untied
+		// embeddings, output_gate_type=swish — vLLM treats swish as an
+		// alias of the silu output gate this implementation already
+		// applies, see llm/qwen35/delta_net.go rmsNormGated). Ships the
+		// preserve-thinking chat template: thinking on by default (open
+		// <think>\n cue) with reasoning traces kept in history — handled
+		// by Tokenizer's marksPreserveThinking family (see
+		// formatPreserveThinkingChat). MLX community 4-bit export.
+		Name:            "qwen3.8-27b",
+		Dir:             "qwen3.8-27b-4bit",
+		HFRepo:          "mlx-community/Qwen3.8-27B-4bit",
+		MinRAMSelect:    32 * gb,
+		MinRAMSuggested: 48 * gb,
+	},
+	{
 		Name: "qwen3.6-35b-a3b",
 		Dir:  "qwen3.6-35b-a3b-4bit",
 		// MoE: ~35B total params, ~3B active per token. Full expert set must
