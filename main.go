@@ -105,6 +105,11 @@ func main() {
 		maxTokens = *flagMaxTokens
 	}
 	loadToolsPreference()
+	if prefPath := toolsPreferencePath(); prefPath != "" && !toolsRequested {
+		// A persisted off is a deliberate earlier choice, but it silently
+		// overrides the default-on after every rebuild — surface it.
+		log.Printf("tools off (persisted in %s — run /tools on to re-enable)", prefPath)
+	}
 	if *flagTools != "" {
 		switch strings.ToLower(*flagTools) {
 		case "on":
