@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/config"
 )
 
@@ -80,16 +81,16 @@ func TestTrimHistory(t *testing.T) {
 func TestGemmaStripThinking(t *testing.T) {
 	in := "before <|channel>thought secret reasoning <channel|> after"
 	want := "before  after"
-	if got := gemmaStripThinking(in); got != want {
-		t.Errorf("gemmaStripThinking = %q, want %q", got, want)
+	if got := chatmodel.GemmaStripThinking(in); got != want {
+		t.Errorf("GemmaStripThinking = %q, want %q", got, want)
 	}
 	// Unterminated thought: drop the rest
 	in = "answer <|channel>thought never closed"
-	if got := gemmaStripThinking(in); got != "answer " {
+	if got := chatmodel.GemmaStripThinking(in); got != "answer " {
 		t.Errorf("unterminated thought: got %q", got)
 	}
 	// No marker: passthrough
-	if got := gemmaStripThinking("plain"); got != "plain" {
+	if got := chatmodel.GemmaStripThinking("plain"); got != "plain" {
 		t.Errorf("passthrough: got %q", got)
 	}
 }
@@ -97,11 +98,11 @@ func TestGemmaStripThinking(t *testing.T) {
 func TestStripThinkingTag(t *testing.T) {
 	in := "answer <thinking>hidden</thinking> tail"
 	want := "answer  tail"
-	if got := stripThinkingTag(in); got != want {
-		t.Errorf("stripThinkingTag = %q, want %q", got, want)
+	if got := chatmodel.StripThinkingTag(in); got != want {
+		t.Errorf("StripThinkingTag = %q, want %q", got, want)
 	}
 	multiline := "a <thinking>\nline1\nline2\n</thinking>\nb"
-	if got := stripThinkingTag(multiline); got != "a \nb" {
+	if got := chatmodel.StripThinkingTag(multiline); got != "a \nb" {
 		t.Errorf("multiline strip: got %q", got)
 	}
 }
@@ -116,8 +117,8 @@ func TestStripWrapperTag(t *testing.T) {
 		{"plain text", "plain text"},
 	}
 	for _, tt := range tests {
-		if got := stripWrapperTag(tt.in); got != tt.want {
-			t.Errorf("stripWrapperTag(%q) = %q, want %q", tt.in, got, tt.want)
+		if got := chatmodel.StripWrapperTag(tt.in); got != tt.want {
+			t.Errorf("chatmodel.StripWrapperTag(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -131,8 +132,8 @@ func TestStripOutputNoise(t *testing.T) {
 		{"no noise", "no noise"},
 	}
 	for _, tt := range tests {
-		if got := stripOutputNoise(tt.in); got != tt.want {
-			t.Errorf("stripOutputNoise(%q) = %q, want %q", tt.in, got, tt.want)
+		if got := chatmodel.StripOutputNoise(tt.in); got != tt.want {
+			t.Errorf("chatmodel.StripOutputNoise(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }

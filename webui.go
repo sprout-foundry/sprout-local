@@ -51,12 +51,15 @@ import (
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
 
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/config"
 	"github.com/sprout-foundry/sprout-local/internal/conversations"
 	"github.com/sprout-foundry/sprout-local/internal/download"
 	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/provider"
 	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
+	"github.com/sprout-foundry/sprout-local/internal/tools"
 	"github.com/sprout-foundry/sprout-local/internal/urlfetch"
 )
 
@@ -75,7 +78,7 @@ type wsClient struct {
 
 	mu       sync.Mutex // serializes frame writes from the pump
 	agent    *core.Agent
-	provider *sinterProvider
+	provider *provider.Provider
 	agentKey string // model+tools config the agent was built for ("|")
 	model    string // selected model name ("" = process default)
 	dir      string // resolved model directory ("" = not yet resolved)
@@ -88,8 +91,8 @@ type wsClient struct {
 // REPL: run_command's y/N confirm cannot be answered over the socket, so
 // its UI.Confirm always declines — file tools and skills run agentically,
 // shell commands stay REPL-only.
-func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error {
-	key := modelDir + "|" + fmt.Sprintf("%v", tools)
+func (s *webServer) ensureAgent(c *wsClient, modelDir string, wantTools bool) error {
+	key := modelDir + "|" + fmt.Sprintf("%v", wantTools)
 	if c.agent != nil && c.agentKey == key {
 		return nil
 	}
@@ -98,15 +101,15 @@ func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error 
 		saved, _ = c.agent.ExportState() // carry the conversation across
 	}
 	executor := core.ToolExecutor(core.NoopExecutor)
-	if tools {
-		executor = newToolExecutor(&decliningUI{})
+	if wantTools {
+		executor = tools.NewToolExecutor(&decliningUI{})
 	}
-	c.provider = newSinterProvider(modelDir)
+	c.provider = provider.NewProvider(modelDir)
 	c.provider.SetDisplayMode(mdterm.Raw) // web socket: plain text, no ANSI
 	agent, err := core.NewAgent(core.Options{
 		Provider:       c.provider,
 		Executor:       executor,
-		SystemPrompt:   webSystemPrompt(tools),
+		SystemPrompt:   webSystemPrompt(wantTools),
 		MaxIterations:  config.MaxToolSteps,
 		EventPublisher: &webEvents{c: c},
 		RetryConfig:    core.RetryConfig{MaxAttempts: 1},
@@ -124,7 +127,7 @@ func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error 
 	// The model just loaded (or is about to be needed): warm the exact
 	// system+tools prefix this agent will send, so the first turn on this
 	// configuration delta-prefills. No-op if the slot already matches.
-	go warmModel(modelDir, webSystemPrompt(tools), tools, executor)
+	go warmModel(modelDir, webSystemPrompt(wantTools), wantTools, executor)
 	return nil
 }
 
@@ -137,10 +140,10 @@ func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error 
 // protocol (from its directory), not the session's startup protocol —
 // a mismatched block would never match the slot the provider actually
 // renders on the first turn.
-func warmPrefixesFor(m *llm.Model, modelDir, systemPrompt string, tools []core.Tool) []string {
+func warmPrefixesFor(m *llm.Model, modelDir, systemPrompt string, seedTools []core.Tool) []string {
 	msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
-	if len(tools) > 0 {
-		block := toolPromptBlockFromSeedFor(tools, toolProtocolForModelDir(modelDir))
+	if len(seedTools) > 0 {
+		block := provider.ToolPromptBlockFromSeedFor(seedTools, tools.ToolProtocolForModelDir(modelDir))
 		msgs[0].Content = strings.TrimRight(msgs[0].Content, "\n") + "\n\n" + block
 	}
 	return []string{m.FormatChatPrefix(msgs)}
@@ -150,7 +153,7 @@ func warmPrefixesFor(m *llm.Model, modelDir, systemPrompt string, tools []core.T
 // so the first user turn delta-prefills instead of paying the full
 // prefill. Fire-and-forget: errors are logged only.
 func warmModel(modelDir, systemPrompt string, tools bool, executor core.ToolExecutor) {
-	m, err := loadModelDir(modelDir)
+	m, err := chatmodel.LoadModelDir(modelDir)
 	if err != nil {
 		log.Printf("warm: %v", err)
 		return
@@ -207,7 +210,7 @@ func (e *webEvents) Publish(eventType string, data interface{}) {
 			"tool_done": eventString(data, "tool_name"),
 			"ok":        ok,
 			"args":      eventJSON(data, "arguments"),
-			"result":    truncateResultForDisplay(eventString(data, "result")),
+			"result":    tools.TruncateResultForDisplay(eventString(data, "result")),
 		})
 	}
 }
@@ -249,7 +252,7 @@ func importTranscript(a *core.Agent, msgs []conversations.StoredMsg) error {
 // dir env (SPROUT_LOCAL_MODEL_DIR or the legacy LOCAL_MODEL_DIR) pins the
 // process to one model.
 func availableModels() []string {
-	if _, pinned := modelDirEnv(); pinned != "" {
+	if _, pinned := paths.ModelDirEnv(); pinned != "" {
 		return nil // pinned: no listing
 	}
 	root := paths.ModelsRoot()
@@ -273,7 +276,7 @@ func availableModels() []string {
 func resolveWebModelDir(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		dir := resolveModelDir()
+		dir := paths.ResolveModelDir()
 		if dir == "" {
 			return "", fmt.Errorf("no model configured (set SPROUT_LOCAL_MODEL_DIR or -m)")
 		}
@@ -486,7 +489,7 @@ func (s *webServer) handlePull(c *wsClient, name string) {
 		pullMu.active = false
 		pullMu.Unlock()
 	}()
-	dest, err := download.DownloadModel(ctxBg(), m)
+	dest, err := download.DownloadModel(chatmodel.CtxBg(), m)
 	if err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
@@ -529,7 +532,7 @@ func (s *webServer) loadConversation(c *wsClient, id string) {
 func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName string, tools bool, prompt string) {
 	// Tell the client immediately that the turn started — model loading
 	// can take many seconds on first use, and silence reads as broken.
-	startTurnMetrics()
+	chatmodel.StartTurnMetrics()
 	c.enqueue(map[string]string{"status": "working"})
 
 	if modelName != "" && modelName != c.model {
@@ -548,7 +551,7 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	}
 
 	// Loading a cold model can take 10-20s; say so before it happens.
-	if !isModelLoaded(dir) {
+	if !chatmodel.IsModelLoaded(dir) {
 		c.enqueue(map[string]string{"status": "loading model " + filepath.Base(dir) + "…"})
 	}
 
@@ -600,9 +603,9 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 
 	// Surface guard stops and spirals so "the text just stopped" is
 	// explainable.
-	if LastMetrics.GuardReason != "" {
-		c.enqueue(map[string]string{"note": "Stopped a runaway generation (" + LastMetrics.GuardReason + ")."})
-	} else if text != "" && isSpiral(text) {
+	if chatmodel.LastMetrics.GuardReason != "" {
+		c.enqueue(map[string]string{"note": "Stopped a runaway generation (" + chatmodel.LastMetrics.GuardReason + ")."})
+	} else if text != "" && chatmodel.IsSpiral(text) {
 		c.enqueue(map[string]string{"note": "The reply was looping — stopped it. Try rephrasing or narrowing the ask."})
 	}
 
@@ -656,7 +659,7 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 
 	// Metrics frame: llama.cpp-style stats for the whole turn (every
 	// generation, tool round-trips included).
-	m := turnMetrics()
+	m := chatmodel.CurrentTurnMetrics()
 	c.enqueue(map[string]any{"metrics": map[string]any{
 		"prompt_tokens": m.PromptTokens,
 		"gen_tokens":    m.GenTokens,
@@ -712,7 +715,7 @@ func lastAssistantText(a *core.Agent) string {
 // browser renders them, everything else downloads as plain text.
 func handlePreview(w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
-	path, err := resolveToolPath(rel)
+	path, err := tools.ResolveToolPath(rel)
 	if err != nil {
 		http.Error(w, "outside sandbox", http.StatusForbidden)
 		return
@@ -755,7 +758,7 @@ func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	// exact precondition). filepath.Base("") would be "." — a bogus
 	// entry that suppresses the panel.
 	def := ""
-	if dir := resolveModelDir(); dir != "" {
+	if dir := paths.ResolveModelDir(); dir != "" {
 		def = filepath.Base(dir)
 	}
 	names := availableModels()
@@ -849,11 +852,11 @@ func serveHosts(addr string) {
 	// picker offers -pull downloads, so warn and serve anyway. (The REPL
 	// path would instead run the first-run walkthrough; only -serve takes
 	// this route.)
-	if resolveModelDir() == "" {
+	if paths.ResolveModelDir() == "" {
 		log.Printf("no models installed — download one via the web UI model picker")
 		fmt.Printf("chatllm serving on http://%s — chat UI, model picker, OpenAI-style /v1 API (no models installed yet)\n", addr)
 	} else {
-		engine, modelPath := modelBackend()
+		engine, modelPath := chatmodel.ModelBackend()
 		fmt.Printf("chatllm serving on http://%s — chat UI, model picker, OpenAI-style /v1 API\n", addr)
 		fmt.Printf("engine %s, default model %s (Ctrl-C to stop)\n", engine, filepath.Base(modelPath))
 	}

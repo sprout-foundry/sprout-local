@@ -3,7 +3,7 @@ package main
 // ---------------------------------------------------------------------------
 // firstrun.go — first-run model walkthrough for the bare REPL.
 //
-// A fresh machine has no models in its models root, so resolveModelDir()
+// A fresh machine has no models in its models root, so paths.ResolveModelDir()
 // returns "" and the REPL would otherwise fatal out. runFirstRun turns that
 // dead end into a guided flow: it lists the catalog with RAM-tier guidance
 // for this machine, asks which model to download (a number, a name, or
@@ -12,7 +12,7 @@ package main
 // startup proceeds as normal.
 //
 // Trigger: only from the interactive REPL path, and only when
-// resolveModelDir() == "". One-shot (-p), transcript, -serve, and -pull all
+// paths.ResolveModelDir() == "". One-shot (-p), transcript, -serve, and -pull all
 // bail before this; explicit/legacy model-dir envs already resolve a dir so
 // the walkthrough never fires. "later"/"skip" exits 0; EOF (a non-
 // interactive stdin) exits 1 with a pointer to -pull.

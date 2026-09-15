@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/sprout-foundry/sinter/llm"
+
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 )
 
 // factCheck asks the model whether answer is correct with respect to
@@ -22,7 +24,7 @@ import (
 // when the answer passes (or when the check is inconclusive — the chat
 // must never nag on a failed parse).
 func factCheck(modelDir, reference, answer string) (bool, error) {
-	m, err := loadModelDir(modelDir)
+	m, err := chatmodel.LoadModelDir(modelDir)
 	if err != nil {
 		return true, err
 	}
@@ -34,9 +36,6 @@ func factCheck(modelDir, reference, answer string) (bool, error) {
 			"\nIs the proposed answer correct according to the reference? Answer with only Yes or No."},
 	}
 
-	genMu.Lock() // serialize with streaming turns on the one GPU
-	defer genMu.Unlock()
-
 	rendered := m.FormatChat(messages)
 	cfg := llm.DefaultGenerateConfig()
 	cfg.MaxTokens = 16
@@ -44,8 +43,10 @@ func factCheck(modelDir, reference, answer string) (bool, error) {
 	cfg.ThinkingTokens = false
 
 	var sb strings.Builder
-	err = m.Generate(ctxBg(), rendered, cfg, func(id int) {
-		sb.WriteString(m.DecodeToken(id))
+	chatmodel.SerializeGeneration(func() {
+		err = m.Generate(chatmodel.CtxBg(), rendered, cfg, func(id int) {
+			sb.WriteString(m.DecodeToken(id))
+		})
 	})
 	if err != nil {
 		return true, err
@@ -58,7 +59,7 @@ func factCheck(modelDir, reference, answer string) (bool, error) {
 // yes/no word; ok is false when no confident verdict can be read (callers
 // treat that as a pass — the chat must never nag on a failed parse).
 func parseYesNo(text string) (verdict bool, ok bool) {
-	for _, f := range strings.Fields(stripOutputNoise(text)) {
+	for _, f := range strings.Fields(chatmodel.StripOutputNoise(text)) {
 		w := strings.ToLower(strings.Trim(f, ".,;:!?—-"))
 		if strings.HasPrefix(w, "yes") {
 			return true, true

@@ -14,6 +14,7 @@ import (
 	"github.com/sprout-foundry/seed/core"
 
 	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/tools"
 )
 
 type replEvents struct{}
@@ -32,7 +33,7 @@ func (e *replEvents) Publish(eventType string, data interface{}) {
 			return
 		}
 		fmt.Printf("%s %s\n", mdterm.AnsiStyle("← result:", mdterm.AnsiCyan),
-			truncateResultForDisplay(eventString(data, "result")))
+			tools.TruncateResultForDisplay(eventString(data, "result")))
 	}
 }
 

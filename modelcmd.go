@@ -24,9 +24,11 @@ import (
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
 
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/download"
 	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/tools"
 )
 
 // currentModelDir returns the active model directory, falling back to the
@@ -35,7 +37,7 @@ func currentModelDir(active *string) string {
 	if active != nil && *active != "" {
 		return *active
 	}
-	return resolveModelDir()
+	return paths.ResolveModelDir()
 }
 
 // handleModelCommand shows (no args) or switches (args) the active model.
@@ -52,13 +54,13 @@ func handleModelCommand(ref string, active *string) {
 		return
 	}
 	fmt.Printf("Loading %s …\n", filepath.Base(dir))
-	if _, err := loadModelDir(dir); err != nil {
+	if _, err := chatmodel.LoadModelDir(dir); err != nil {
 		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
-	evictModels(residentLimit(), dir)
+	evictModels(chatmodel.ResidentLimit(), dir)
 	*active = dir
-	setSessionModelProtocol(dir)
+	tools.SetSessionModelProtocol(dir)
 	fmt.Printf("Switched to %s — history kept; /new starts fresh.\n", filepath.Base(dir))
 }
 
@@ -76,24 +78,24 @@ func handlePullCommand(name string, active *string) {
 		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
-	dest, err := download.DownloadModel(ctxBg(), m)
+	dest, err := download.DownloadModel(chatmodel.CtxBg(), m)
 	if err != nil {
 		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
 	fmt.Printf("Pulled %s → %s\n", m.Name, dest)
 
-	if _, err := loadModelDir(dest); err != nil {
+	if _, err := chatmodel.LoadModelDir(dest); err != nil {
 		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
-	evictModels(residentLimit(), dest)
+	evictModels(chatmodel.ResidentLimit(), dest)
 	*active = dest
-	setSessionModelProtocol(dest)
+	tools.SetSessionModelProtocol(dest)
 	fmt.Printf("Switched to %s.\n", filepath.Base(dest))
 
 	printer := mdterm.StdoutPrinter()
-	_, _ = streamChatModel(ctxBg(), dest, []llm.ChatMessage{
+	_, _ = chatmodel.StreamChatModel(chatmodel.CtxBg(), dest, []llm.ChatMessage{
 		{Role: "user", Content: "Introduce yourself in one short sentence."},
 	}, printer.WriteDelta)
 	printer.Close()
@@ -144,7 +146,7 @@ func availableModelNames() (names []string, def string) {
 		}
 	}
 	sort.Strings(names)
-	if dir := resolveModelDir(); dir != "" {
+	if dir := paths.ResolveModelDir(); dir != "" {
 		def = filepath.Base(dir)
 		found := false
 		for _, n := range names {
@@ -164,7 +166,7 @@ func availableModelNames() (names []string, def string) {
 func printModelList(active string) {
 	names, def := availableModelNames()
 	if active == "" {
-		active = resolveModelDir()
+		active = paths.ResolveModelDir()
 	}
 	mark := func(name string) string {
 		if active != "" && filepath.Base(active) == name {
@@ -187,9 +189,7 @@ func printModelList(active string) {
 
 // evictModels frees and drops cache entries so at most keep models stay
 // resident (kept for the slash-command call sites; the shared cap also
-// runs inside loadModelDir, so every load path is covered).
+// runs inside LoadModelDir, so every load path is covered).
 func evictModels(keep int, recent string) {
-	modelMu.Lock()
-	defer modelMu.Unlock()
-	evictModelsLocked(keep, recent)
+	chatmodel.Evict(keep, recent)
 }

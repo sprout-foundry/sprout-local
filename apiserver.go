@@ -28,7 +28,10 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm/openaisserver"
+
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // apiServer routes OpenAI-style requests to per-model openaisserver
@@ -41,7 +44,7 @@ type apiServer struct {
 }
 
 func newAPIServer() *apiServer {
-	return &apiServer{byID: map[string]*openaisserver.Server{}, defID: filepath.Base(resolveModelDir())}
+	return &apiServer{byID: map[string]*openaisserver.Server{}, defID: filepath.Base(paths.ResolveModelDir())}
 }
 
 // serverFor returns (building if needed) the openaisserver for a model.
@@ -62,7 +65,7 @@ func (a *apiServer) serverFor(name string) (*openaisserver.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := loadModelDir(dir)
+	m, err := chatmodel.LoadModelDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -137,8 +140,8 @@ func (a *apiServer) HandleModels(w http.ResponseWriter, r *http.Request) {
 		// ContextLength only for already-resident models: listing must not
 		// trigger a multi-second model load just to fill one field.
 		ctxLen := 0
-		if dir, err := resolveWebModelDir(n); err == nil && isModelLoaded(dir) {
-			if m, err := loadModelDir(dir); err == nil {
+		if dir, err := resolveWebModelDir(n); err == nil && chatmodel.IsModelLoaded(dir) {
+			if m, err := chatmodel.LoadModelDir(dir); err == nil {
 				ctxLen = m.ContextLength()
 			}
 		}

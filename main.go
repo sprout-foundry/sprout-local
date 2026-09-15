@@ -27,10 +27,13 @@ import (
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/sinter/llm"
 
+	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/config"
 	"github.com/sprout-foundry/sprout-local/internal/download"
 	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/provider"
+	"github.com/sprout-foundry/sprout-local/internal/tools"
 )
 
 // Session defaults.
@@ -130,17 +133,17 @@ func main() {
 
 	// Engine chatter (sinter load/warmup lines) is filtered out unless -v
 	// or CHATLLM_DEBUG is set. Installed before any model loads.
-	installLogFilter(*flagVerbose || os.Getenv("CHATLLM_DEBUG") != "")
+	chatmodel.InstallLogFilter(*flagVerbose || os.Getenv("CHATLLM_DEBUG") != "")
 
 	// Skills (<stateRoot>/skills/*.json, default ~/.sprout-local/skills)
 	// load once at startup; /tools reloads them in the REPL. Load
 	// failures are non-fatal noise.
-	if n, errs := reloadSkills(); len(errs) > 0 {
+	if n, errs := tools.ReloadSkills(); len(errs) > 0 {
 		for _, err := range errs {
 			log.Printf("skill: %v", err)
 		}
 	} else if n > 0 {
-		log.Printf("loaded %d skill%s from %s", n, plural(n), paths.SkillsDir())
+		log.Printf("loaded %d skill%s from %s", n, tools.Plural(n), paths.SkillsDir())
 	}
 
 	// -serve: warm the default model's system+tools prefix in the
@@ -150,16 +153,16 @@ func main() {
 	if *flagServe {
 		executor := core.ToolExecutor(core.NoopExecutor)
 		if config.ToolsRequested {
-			executor = newToolExecutor(nil)
+			executor = tools.NewToolExecutor(nil)
 		}
-		dir := resolveModelDir()
+		dir := paths.ResolveModelDir()
 		if dir != "" {
 			go warmModel(dir, config.EffectiveSystemPrompt(*flagSystem), config.ToolsRequested, executor)
 		}
 	}
 
 	// -pull: fetch the model first, then drop into normal startup with the
-// new model selected. A bare -pull lists the catalog and exits.
+	// new model selected. A bare -pull lists the catalog and exits.
 	if *flagPull {
 		name := strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if name == "" {
@@ -170,7 +173,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Fatal: %v", err)
 		}
-		dest, err := download.DownloadModel(ctxBg(), m)
+		dest, err := download.DownloadModel(chatmodel.CtxBg(), m)
 		if err != nil {
 			log.Fatalf("Fatal: %v", err)
 		}
@@ -201,13 +204,13 @@ func main() {
 	// the interactive REPL reaches this — -p one-shot and -transcript pipe
 	// mode bail out of the flow, and -serve / -pull returned earlier.
 	replMode := *flagPrompt == "" && !*flagTranscript
-	if replMode && resolveModelDir() == "" {
-		runFirstRun(ctxBg(), bufio.NewReader(os.Stdin))
+	if replMode && paths.ResolveModelDir() == "" {
+		runFirstRun(chatmodel.CtxBg(), bufio.NewReader(os.Stdin))
 	}
 
-	// Startup probe — mirrors gmitllm's modelBackend(): fail fast with a
+	// Startup probe — mirrors gmitllm's chatmodel.ModelBackend(): fail fast with a
 	// clear message instead of a deep sinter load error on first message.
-	engine, modelPath := modelBackend()
+	engine, modelPath := chatmodel.ModelBackend()
 
 	startSignalWatch()
 
@@ -233,7 +236,7 @@ func main() {
 
 // runOneShotPipe reads {"messages":[{role,content}...]} JSON from stdin,
 // streams the assistant response to stdout, and (with eom) finishes with
-// the endOfMessage marker line. Diagnostics stay on stderr. When the
+// the chatmodel.EndOfMessage marker line. Diagnostics stay on stderr. When the
 // transcript has no messages, nothing is generated — with eom the marker
 // is still emitted so pipe consumers see a well-formed (empty) exchange.
 func runOneShotPipe(engine, modelPath string, noLog, eom bool) error {
@@ -245,18 +248,18 @@ func runOneShotPipe(engine, modelPath string, noLog, eom bool) error {
 
 	if len(req.Messages) == 0 {
 		if eom {
-			fmt.Println(endOfMessage)
+			fmt.Println(chatmodel.EndOfMessage)
 		}
 		return nil
 	}
 
-	text, err := streamChat(ctxBg(), req.Messages, mdterm.StdoutPrinter().WriteDelta)
+	text, err := chatmodel.StreamChat(chatmodel.CtxBg(), req.Messages, mdterm.StdoutPrinter().WriteDelta)
 	fmt.Println()
 	if err != nil {
 		return err
 	}
 	if eom {
-		fmt.Println(endOfMessage)
+		fmt.Println(chatmodel.EndOfMessage)
 	}
 
 	if !noLog {
@@ -279,7 +282,7 @@ func runOneShot(systemPrompt, prompt, engine, modelPath string) {
 	}
 	messages = append(messages, llm.ChatMessage{Role: "user", Content: prompt})
 
-	text, err := streamChat(ctxBg(), messages, mdterm.StdoutPrinter().WriteDelta)
+	text, err := chatmodel.StreamChat(chatmodel.CtxBg(), messages, mdterm.StdoutPrinter().WriteDelta)
 	fmt.Println() // newline after the streamed response
 	if err != nil {
 		log.Fatalf("Fatal: %v", err)
@@ -347,7 +350,7 @@ func runREPL(engine, modelPath, systemPrompt string) {
 // system prompt, and terminal UI.
 type replState struct {
 	agent        *core.Agent
-	provider     *sinterProvider
+	provider     *provider.Provider
 	model        string
 	systemPrompt string
 	ui           *termUI
@@ -381,7 +384,7 @@ func (u *termUI) Confirm(message string) (bool, error) {
 	case "a", "always":
 		if rest, found := strings.CutPrefix(message, "run command: "); found {
 			if cmd := strings.Fields(rest); len(cmd) > 0 {
-				sessionApprovedCommands = append(sessionApprovedCommands, cmd[0])
+				tools.AddSessionApprovedCommand(cmd[0])
 			}
 		}
 		return true, nil
@@ -412,9 +415,9 @@ func (s *replState) rebuildAgent(carry bool) {
 	}
 	executor := core.ToolExecutor(core.NoopExecutor)
 	if config.ToolsRequested {
-		executor = newToolExecutor(s.ui)
+		executor = tools.NewToolExecutor(s.ui)
 	}
-	s.provider = newSinterProvider(s.model)
+	s.provider = provider.NewProvider(s.model)
 	agent, err := core.NewAgent(core.Options{
 		Provider:       s.provider,
 		Executor:       executor,
@@ -449,7 +452,7 @@ func runChatTurn(st *replState, userLine string) error {
 	st.provider.SetDisplay(printer.WriteDelta)
 	defer st.provider.SetDisplay(nil)
 
-	startTurnMetrics()
+	chatmodel.StartTurnMetrics()
 	fmt.Println() // blank line before the response
 	streamCtx, cancel := context.WithCancel(context.Background())
 	done := registerGen(cancel)
@@ -493,8 +496,8 @@ func runChatTurn(st *replState, userLine string) error {
 // metricsLine renders the whole turn's stats for REPL display (sums every
 // generation in the turn — tool round-trips included).
 func (s *replState) metricsLine() string {
-	m := turnMetrics()
-	if !turnMetricsActive || m.GenTokens == 0 {
+	m := chatmodel.CurrentTurnMetrics()
+	if !chatmodel.TurnMetricsActive() || m.GenTokens == 0 {
 		return ""
 	}
 	return "  " + m.String()
@@ -511,110 +514,6 @@ func logTurn(st *replState, userLine, reply string) {
 		}
 	}
 	appendLog("assistant", st.model, st.systemPrompt, "", reply)
-}
-
-// toolStreamFilter suppresses tool-call markup from the streamed display
-// while the raw text still accumulates for parsing. Without tools enabled
-// it is a pass-through. Clean deltas go to both the terminal printer and
-// (optionally) seed's stream handler, so the agent's content buffer
-// matches what the user saw. Implementation: hold back a tag-sized tail of
-// the stream, watch for an opening tag (<tool_call> for the qwen protocol,
-// <function name=" for MiniCPM5); once seen, go silent until the matching
-// close has passed. Text after the block flows again normally.
-type toolStreamFilter struct {
-	printer *mdterm.StreamPrinter // terminal display (may be nil)
-	onDelta func(string)   // seed stream handler feed (may be nil)
-	tools   bool
-	tail    string // held-back characters not yet emitted
-	inCall  bool   // inside a tool-call block
-	// protocol selects the markup pair ("qwen" default, "minicpm5").
-	protocol string
-}
-
-const toolCallTag = "<tool_call>"
-const toolCallTagEnd = "</tool_call>"
-const miniCPM5CallTag = "<function name=\""
-const miniCPM5CallTagEnd = "</function>"
-const streamHoldback = len(toolCallTag) + 8 // tag + slack for split spans
-
-// streamTags returns the (open, close) markup pair for the active protocol.
-func (f *toolStreamFilter) streamTags() (string, string) {
-	if f.protocol == "minicpm5" {
-		return miniCPM5CallTag, miniCPM5CallTagEnd
-	}
-	return toolCallTag, toolCallTagEnd
-}
-
-// emit fans a clean delta out to the terminal and the agent's buffer.
-func (f *toolStreamFilter) emit(s string) {
-	if s == "" {
-		return
-	}
-	if f.printer != nil {
-		f.printer.Write(s)
-	}
-	if f.onDelta != nil {
-		f.onDelta(s)
-	}
-}
-
-func (f *toolStreamFilter) write(delta string) {
-	if !f.tools {
-		f.emit(delta)
-		return
-	}
-	openTag, closeTag := f.streamTags()
-	f.tail += delta
-	for {
-		if f.inCall {
-			end := strings.Index(f.tail, closeTag)
-			if end < 0 {
-				// Keep only a holdback in case the closing tag is split.
-				if len(f.tail) > streamHoldback {
-					f.tail = f.tail[len(f.tail)-streamHoldback:]
-				}
-				return
-			}
-			f.tail = f.tail[end+len(closeTag):]
-			f.inCall = false
-			continue
-		}
-		start := strings.Index(f.tail, openTag)
-		if start < 0 {
-			// No opening tag in the buffer: emit all but the holdback.
-			if len(f.tail) > streamHoldback {
-				clean := f.tail[:len(f.tail)-streamHoldback]
-				f.tail = f.tail[len(f.tail)-streamHoldback:]
-				f.emit(clean)
-			}
-			return
-		}
-		if start > 0 {
-			f.emit(f.tail[:start])
-		}
-		f.tail = f.tail[start+len(openTag):]
-		f.inCall = true
-	}
-}
-
-// close flushes the held-back tail. If a call block is still open, only
-// raw call markup is dropped: any prose in the tail (the model's words
-// before it spiraled) still reaches the display, minus a partial "<…"
-// tag fragment.
-func (f *toolStreamFilter) close() {
-	if !f.tools {
-		return
-	}
-	if f.inCall {
-		// Inside <tool_call>…: drop markup, but the model may have written
-		// prose before the block opened — that already streamed. The tail
-		// here is call markup (possibly unterminated); show nothing.
-		return
-	}
-	if f.tail != "" {
-		f.emit(f.tail)
-		f.tail = ""
-	}
 }
 
 // trimHistory caps the web UI's per-connection history at historyLimit
@@ -702,7 +601,7 @@ func dispatchCommand(cmd, args string, st *replState) bool {
 			st.rebuildAgent(true)
 		}
 	case "tools":
-		handleToolsCommand(args)
+		tools.HandleToolsCommand(args)
 		st.rebuildAgent(true) // executor swap: NoopExecutor ↔ toolExecutor
 	case "history":
 		printHistory(st.agent)
@@ -791,7 +690,8 @@ func printHelp() {
 	fmt.Println(`            SPROUT_LOCAL_TOOL_RESULT_CAP, SPROUT_LOCAL_COMMAND_TIMEOUT)`)
 }
 
-// errString safely extracts the message from an error.
+// errString safely extracts the message from an error. Kept in package
+// main for REPL formatting; chatmodel has its own copy.
 func errString(err error) string {
 	if err == nil {
 		return ""

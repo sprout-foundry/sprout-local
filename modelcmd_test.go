@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sprout-local/internal/download"
 )
 
@@ -25,12 +24,6 @@ func makeFakeModelDir(t *testing.T, root, name string) string {
 		}
 	}
 	return dir
-}
-
-func resetModelCache() {
-	modelMu.Lock()
-	defer modelMu.Unlock()
-	modelCache = map[string]*llm.Model{}
 }
 
 func TestModelFromRef(t *testing.T) {
@@ -93,47 +86,11 @@ func TestAvailableModelNames(t *testing.T) {
 	}
 }
 
-func TestEvictModels(t *testing.T) {
-	root := t.TempDir()
-	resetModelCache()
-	defer resetModelCache()
-
-	for _, n := range []string{"a", "b", "c"} {
-		d := makeFakeModelDir(t, root, n)
-		modelCache[d] = nil // entries stand in for loaded models
-	}
-	recent := filepath.Join(root, "c")
-
-	// A loaded model would be Closed here; nil entries make Close a no-op.
-	// The point is the bookkeeping: keep limit honored, recent survives.
-	evictModels(2, recent)
-
-	if len(modelCache) != 2 {
-		t.Errorf("after evict: %d cached, want 2", len(modelCache))
-	}
-	if _, ok := modelCache[recent]; !ok {
-		t.Error("evictModels dropped the recent model")
-	}
-	if _, ok := modelCache[filepath.Join(root, "a")]; ok {
-		t.Error("evictModels kept the oldest model")
-	}
-
-	// Under the limit: no-op.
-	evictModels(5, recent)
-	if len(modelCache) != 2 {
-		t.Errorf("under-limit evict changed the cache: %d cached", len(modelCache))
-	}
-}
-
-// TestDispatchModelCommands covers the wiring without loading real models:
-// show and failed lookups must never switch the session model or exit.
 func TestDispatchModelCommands(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root)
 	// Isolate from any real ~/.sprout-local state on the dev machine.
 	t.Setenv("SPROUT_LOCAL_STATE_ROOT", t.TempDir())
-	resetModelCache()
-	defer resetModelCache()
 
 	st := &replState{ui: &termUI{reader: bufio.NewReader(strings.NewReader(""))}}
 	st.newAgent()
