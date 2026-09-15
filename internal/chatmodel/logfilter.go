@@ -1,4 +1,4 @@
-package main
+package chatmodel
 
 // ---------------------------------------------------------------------------
 // logfilter.go — keep sinter's engine chatter off the console.
@@ -57,7 +57,7 @@ func isEngineNoise(line string) bool {
 	return false
 }
 
-// installLogFilter routes the standard logger through the noise filter.
-func installLogFilter(verbose bool) {
+// InstallLogFilter routes the standard logger through the noise filter.
+func InstallLogFilter(verbose bool) {
 	logSetOutput(&logFilter{w: stderrWriter(), verbose: verbose})
 }

@@ -1,4 +1,4 @@
-package main
+package chatmodel
 
 import (
 	"strings"
@@ -14,31 +14,31 @@ func TestSpiralDetection(t *testing.T) {
 	// Tool-wrapped repetitive file content: NOT a spiral.
 	toolWrapped := "Building your site now.\n\n<tool_call>\n<function=write_file>\n<parameter=content>\n" +
 		css + "\n</parameter>\n</function>\n</tool_call>\nDone!"
-	if isSpiral(toolWrapped) {
+	if IsSpiral(toolWrapped) {
 		t.Error("tool-wrapped CSS flagged as spiral")
 	}
-	if isSpiral("Sure.\n<tool_call>\n<function=write_file>\n<parameter=content>\n" + goCode + "</content>\n</function>\n</tool_call>") {
+	if IsSpiral("Sure.\n<tool_call>\n<function=write_file>\n<parameter=content>\n" + goCode + "</content>\n</function>\n</tool_call>") {
 		t.Error("tool-wrapped Go flagged as spiral")
 	}
 
 	// Plain-prose spirals (the observed failure mode): flagged.
 	spiral := strings.Repeat("Show me where they make people more dependent and less independent. ", 40)
-	if !isSpiral(spiral) {
+	if !IsSpiral(spiral) {
 		t.Error("plain spiral not detected")
 	}
 	frag := strings.Repeat("over and over the same thing repeats\n", 40)
-	if !isSpiral(frag) {
+	if !IsSpiral(frag) {
 		t.Error("phrase loop not detected")
 	}
 
 	// Legit prose with a repeated refrain (refrain does not dominate).
 	refrain := strings.Repeat("The ocean covers more than 70% of our planet's surface. ", 10) +
 		strings.Repeat("And that is why the ocean matters. ", 3)
-	if isSpiral(refrain) {
+	if IsSpiral(refrain) {
 		t.Error("refrain prose flagged as spiral")
 	}
 	// Short text: below the minimum sample.
-	if isSpiral("hello world hello world") {
+	if IsSpiral("hello world hello world") {
 		t.Error("tiny text flagged")
 	}
 }

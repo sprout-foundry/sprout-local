@@ -1,4 +1,4 @@
-package main
+package chatmodel
 
 import (
 	"context"
@@ -14,11 +14,9 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm"
-	"github.com/sprout-foundry/sinter/llm/catalog"
 
 	"github.com/sprout-foundry/sprout-local/internal/config"
 	"github.com/sprout-foundry/sprout-local/internal/paths"
-	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
 )
 
 // Per-platform model registrations (sinter blank-imports) live in
@@ -41,18 +39,20 @@ var (
 	modelMu    sync.Mutex
 	modelCache = map[string]*llm.Model{}
 
-	genMu sync.Mutex // sinter runs on one GPU: serialize Generate calls
+	// genMu serializes Generate calls across surfaces: sinter runs on
+	// one GPU. Non-streaming callers go through SerializeGeneration.
+	genMu sync.Mutex
 
 	// modelRecent is the most recently loaded/used model directory; the
 	// eviction pass never evicts it.
 	modelRecent string
 )
 
-// residentLimit is how many models may stay resident in the load cache.
+// ResidentLimit is how many models may stay resident in the load cache.
 // Two keeps instant swaps between a pair; each additional resident model
 // pins its weights for the model's lifetime. Override with
 // SPROUT_LOCAL_RESIDENT_MODELS (1 = always reload on switch).
-func residentLimit() int {
+func ResidentLimit() int {
 	if v := os.Getenv("SPROUT_LOCAL_RESIDENT_MODELS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			return n
@@ -61,97 +61,12 @@ func residentLimit() int {
 	return 2
 }
 
-// preferredModelName is the first model picked when scanning the models
-// root: the q5 tuned 4B export. Below ~5-bit the 4B tier loses too much
-// to follow tool-call format and multi-step instructions reliably; the q5
-// tuned export is the smallest quant that stays cogent at this size.
-const preferredModelName = "qwen3.5-4b-sprout-tuned-mlx-q5"
-
-// modelDirEnv returns the explicit model-directory override:
-// SPROUT_LOCAL_MODEL_DIR first, the legacy LOCAL_MODEL_DIR as fallback.
-// The variable name that supplied it is returned so error messages can
-// point at the right one; ("", "") when neither is set.
-func modelDirEnv() (varName, dir string) {
-	if v := os.Getenv("SPROUT_LOCAL_MODEL_DIR"); v != "" {
-		return "SPROUT_LOCAL_MODEL_DIR", v
-	}
-	if v := os.Getenv("LOCAL_MODEL_DIR"); v != "" {
-		return "LOCAL_MODEL_DIR", v
-	}
-	return "", ""
-}
-
-// bestInstalledModel scans the models root for MLX-format model
-// directories and returns the best installed one: the tuned 4B export
-// when present (preserves the historical default where it lives),
-// otherwise the alphabetically-first model dir. A missing or empty root
-// yields "" — the caller surfaces the actionable error.
-func bestInstalledModel() string {
-	root := paths.ModelsRoot()
-	if root == "" {
-		return ""
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return ""
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() || !paths.IsModelDir(filepath.Join(root, e.Name())) {
-			continue
-		}
-		if e.Name() == preferredModelName {
-			return filepath.Join(root, e.Name())
-		}
-		names = append(names, e.Name())
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	return filepath.Join(root, names[0])
-}
-
-// resolveModelDir returns the MLX-format model directory for sinter, or
-// "" when no model can be found (the caller surfaces the error).
-//
-// Resolution order:
-//  1. SPROUT_LOCAL_MODEL_DIR, or the legacy LOCAL_MODEL_DIR (MLX-format
-//     directory: config.json + tokenizer.json + *.safetensors)
-//  2. the RAM-aware catalog pick for the models root
-//     (SPROUT_LOCAL_MODELS_ROOT or <stateRoot>/models):
-//     catalog.SelectModelForRAM walks the suggested tier down to smaller
-//     ones plus one stretch tier, preferring installed sprout-tuned
-//     variants and honoring the memory gate
-//  3. the bestInstalledModel scan as a fallback, which also covers
-//     manually-added non-catalog model dirs that SelectModelForRAM cannot
-//     see
-func resolveModelDir() string {
-	if varName, envDir := modelDirEnv(); envDir != "" {
-		if paths.IsModelDir(envDir) {
-			return envDir
-		}
-		log.Fatalf("%s=%s does not look like a model directory (need config.json + tokenizer.json + *.safetensors)", varName, envDir)
-	}
-	root := paths.ModelsRoot()
-	if root != "" {
-		if m, err := catalog.SelectModelForRAM(root, sysinfo.TotalSystemRAM()); err == nil && m != nil {
-			if paths.IsModelDir(m.Dir) {
-				return m.Dir
-			}
-		}
-	}
-	return bestInstalledModel()
-}
-
-// loadModelDir loads and caches a sinter model by directory, so switching
-// models in the web UI only pays the load cost once per model.
-// loadModelDir loads and caches a sinter model by directory, so switching
+// LoadModelDir loads and caches a sinter model by directory, so switching
 // models in the web UI only pays the load cost once per model. The cache
 // is capped (evictModels) right here — every surface (REPL, web, OpenAI
 // API, warming) funnels through this function, so no caller can leak
 // resident models by switching.
-func loadModelDir(dir string) (*llm.Model, error) {
+func LoadModelDir(dir string) (*llm.Model, error) {
 	modelMu.Lock()
 	defer modelMu.Unlock()
 	if m, ok := modelCache[dir]; ok {
@@ -165,7 +80,7 @@ func loadModelDir(dir string) (*llm.Model, error) {
 	modelCache[dir] = m
 	modelRecent = dir
 	log.Printf("sinter: loaded %s", dir)
-	evictModelsLocked(residentLimit(), dir)
+	evictModelsLocked(ResidentLimit(), dir)
 	return m, nil
 }
 
@@ -173,34 +88,34 @@ func loadModelDir(dir string) (*llm.Model, error) {
 // Returns (nil, nil) when no MLX-format model directory is
 // configured/found — the caller surfaces the error to the user.
 func loadSinterModel() (*llm.Model, error) {
-	dir := resolveModelDir()
+	dir := paths.ResolveModelDir()
 	if dir == "" {
 		return nil, nil // no error: just not available
 	}
-	return loadModelDir(dir)
+	return LoadModelDir(dir)
 }
 
-// streamChatDir is streamChat against an explicit model directory (the
+// StreamChatDir is StreamChat against an explicit model directory (the
 // REPL's session model, set by /model or /pull). An empty dir falls back
 // to the process default. REPL-only: single-threaded, so it skips the
-// genMu serialization the web UI's streamChatModel needs.
-func streamChatDir(ctx context.Context, modelDir string, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
+// GenMu serialization the web UI's StreamChatModel needs.
+func StreamChatDir(ctx context.Context, modelDir string, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
 	if modelDir == "" {
-		return streamChat(ctx, messages, onDelta)
+		return StreamChat(ctx, messages, onDelta)
 	}
-	m, err := loadModelDir(modelDir)
+	m, err := LoadModelDir(modelDir)
 	if err != nil {
 		return "", err
 	}
 	return generateChat(ctx, m, messages, onDelta)
 }
 
-// streamChat renders the conversation via the model's chat template and
+// StreamChat renders the conversation via the model's chat template and
 // streams generated tokens through onDelta as decoded text. The full
 // response is also returned (already hygiene-stripped). Streaming is
 // raw-text; stripStreamingNoise handles the visible layer only, while the
 // returned value is fully cleaned for history/logging.
-func streamChat(ctx context.Context, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
+func StreamChat(ctx context.Context, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
 	m, err := loadSinterModel()
 	if err != nil {
 		return "", err
@@ -212,8 +127,8 @@ func streamChat(ctx context.Context, messages []llm.ChatMessage, onDelta func(st
 }
 
 // generateChat runs one streaming completion on a loaded model and applies
-// the full hygiene pass to the returned text. Shared by streamChat
-// (process default model) and streamChatDir (session model).
+// the full hygiene pass to the returned text. Shared by StreamChat
+// (process default model) and StreamChatDir (session model).
 // TurnMetrics is one generation's llama.cpp-style stats: prompt tokens,
 // generation tokens, wall-clock timing, and context usage.
 type TurnMetrics struct {
@@ -268,7 +183,7 @@ var turnMetricsAcc TurnMetrics
 var turnMetricsActive bool
 
 // startTurnMetrics clears the per-turn accumulator.
-func startTurnMetrics() {
+func StartTurnMetrics() {
 	turnMetricsAcc = TurnMetrics{}
 	turnMetricsActive = true
 }
@@ -280,8 +195,11 @@ func trackMetrics(m TurnMetrics) {
 	LastMetrics = m
 }
 
-// turnMetrics returns the accumulated per-turn stats.
-func turnMetrics() TurnMetrics { return turnMetricsAcc }
+// CurrentTurnMetrics returns the accumulated per-turn stats.
+func CurrentTurnMetrics() TurnMetrics { return turnMetricsAcc }
+
+// TurnMetricsActive reports whether metric accumulation is on for this turn.
+func TurnMetricsActive() bool { return turnMetricsActive }
 
 // addMetrics sums two metric snapshots (context fields come from b, the
 // latest generation's window position).
@@ -333,7 +251,7 @@ func newGenGuard(parent context.Context) (context.Context, *genGuard) {
 // control tokens. Repetition is NOT a cancel — legitimate output (CSS
 // blocks, table rows, code idioms, poetry) repeats short spans, and the
 // token budget already bounds any loop. Repetitive spirals are instead
-// detected post-hoc by isSpiral and (a) excluded from seed's
+// detected post-hoc by IsSpiral and (a) excluded from seed's
 // truncated-continue logic via an explicit finish note, (b) reported to
 // the user.
 func (g *genGuard) feed(delta string) bool {
@@ -352,14 +270,14 @@ func (g *genGuard) feed(delta string) bool {
 	return false
 }
 
-// isSpiral reports whether the assistant PROSE (text before any
+// IsSpiral reports whether the assistant PROSE (text before any
 // <tool_call> block) is dominated by verbatim repetition of a single
 // long span — the "Show me where they…" failure mode. Repetition inside
 // tool parameters is excluded: generated files legitimately repeat
 // idioms (CSS blocks, table rows, error-handling patterns). Used
 // post-generation: spiral text is still delivered (the user saw it
 // stream) but the reply is annotated so seed treats the turn as final.
-func isSpiral(text string) bool {
+func IsSpiral(text string) bool {
 	prose := text
 	if i := strings.Index(prose, "<tool_call>"); i >= 0 {
 		prose = prose[:i]
@@ -436,15 +354,15 @@ func (g *genGuard) text() string {
 	return s
 }
 
-// isModelLoaded reports whether dir is resident in the load cache.
-func isModelLoaded(dir string) bool {
+// IsModelLoaded reports whether dir is resident in the load cache.
+func IsModelLoaded(dir string) bool {
 	modelMu.Lock()
 	defer modelMu.Unlock()
 	_, ok := modelCache[dir]
 	return ok
 }
 
-// runGeneration is the single generation core every surface goes through
+// RunGeneration is the single generation core every surface goes through
 // (REPL via the seed provider, web UI, one-shot). One loop owns the
 // cross-cutting concerns that used to be copy-pasted three times: config,
 // metrics, the leak/repetition guard, and output hygiene.
@@ -452,7 +370,7 @@ func isModelLoaded(dir string) bool {
 //	onDelta receives raw decoded deltas as they stream (may be nil).
 //	Returns the hygiened text; guard-triggered stops return the clean
 //	prefix plus a "…[stopped: <reason>]" note appended by the caller.
-func runGeneration(
+func RunGeneration(
 	ctx context.Context,
 	m *llm.Model,
 	rawModelDir string,
@@ -499,11 +417,11 @@ func runGeneration(
 		}
 		// Canceled mid-stream: return whatever streamed so callers can
 		// keep the partial (REPL prints "(cancelled)" for context).
-		return hygieneAll(guard.text()), metrics, genErr
+		return HygieneAll(guard.text()), metrics, genErr
 	}
 
 	guardText := guard.text()
-	text = hygieneAll(guardText)
+	text = HygieneAll(guardText)
 	if os.Getenv("SPROUT_LOCAL_RAW") == "1" {
 		if text == "" && genTokens > 0 {
 			// Everything was eaten post-generation: dump the unhygiened
@@ -517,18 +435,26 @@ func runGeneration(
 	return text, metrics, nil
 }
 
-// hygieneAll is the full post-generation cleanup pass (mirrors gmitllm):
+// HygieneAll is the full post-generation cleanup pass (mirrors gmitllm):
 // Gemma thought-channel spans, Qwen <thinking> blocks, wrapper tags,
 // surrounding quote noise.
-func hygieneAll(text string) string {
-	text = gemmaStripThinking(text)
-	text = stripThinkingTag(text)
-	text = stripWrapperTag(text)
-	return stripOutputNoise(text)
+func HygieneAll(text string) string {
+	text = GemmaStripThinking(text)
+	text = StripThinkingTag(text)
+	text = StripWrapperTag(text)
+	return StripOutputNoise(text)
+}
+
+// errString safely extracts the message from an error.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // evictModelsLocked frees and drops cache entries so at most keep models
-// stay resident. Called with modelMu held (from loadModelDir); the active
+// stay resident. Called with modelMu held (from LoadModelDir); the active
 // model is never evicted, and beyond that alphabetical order stands in
 // for recency — with keep=2 and alternating use of two models this is a
 // no-op, which is the common case.
@@ -554,6 +480,15 @@ func evictModelsLocked(keep int, recent string) {
 		delete(modelCache, n)
 		log.Printf("chatllm: evicted %s (resident limit %d)", filepath.Base(n), keep)
 	}
+}
+
+// Evict frees and drops cache entries so at most keep models stay
+// resident (public entry; evictModelsLocked is the shared core that
+// runs inside LoadModelDir as well, so every load path is capped).
+func Evict(keep int, recent string) {
+	modelMu.Lock()
+	defer modelMu.Unlock()
+	evictModelsLocked(keep, recent)
 }
 
 // dumpRawFull writes the unhygiened stream with a reason header — the
@@ -596,16 +531,14 @@ func dumpRaw(modelDir, text string) {
 // generateChat runs one streaming completion on a loaded model through the
 // shared generation core.
 func generateChat(ctx context.Context, m *llm.Model, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
-	text, _, err := runGeneration(ctx, m, "", messages, onDelta)
+	text, _, err := RunGeneration(ctx, m, "", messages, onDelta)
 	return text, err
 }
 
-// streamChatModel is streamChat against an explicit model directory — the
+// StreamChatModel is StreamChat against an explicit model directory — the
 // web UI lets each connection pick a model from the shared models root.
-// streamChatModel is streamChat against an explicit model directory — the
-// web UI lets each connection pick a model from the shared models root.
-func streamChatModel(ctx context.Context, modelDir string, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
-	m, err := loadModelDir(modelDir)
+func StreamChatModel(ctx context.Context, modelDir string, messages []llm.ChatMessage, onDelta func(string)) (string, error) {
+	m, err := LoadModelDir(modelDir)
 	if err != nil {
 		return "", err
 	}
@@ -616,11 +549,11 @@ func streamChatModel(ctx context.Context, modelDir string, messages []llm.ChatMe
 	return generateChat(ctx, m, messages, onDelta)
 }
 
-// gemmaStripThinking removes thought-channel spans the model may emit
+// GemmaStripThinking removes thought-channel spans the model may emit
 // (<|channel>thought …<channel|>), mirroring the template's strip_thinking
 // macro. Ported from gmitllm sintermodel.go (origin sprout
 // pkg/localmodel/gemma_tools.go).
-func gemmaStripThinking(text string) string {
+func GemmaStripThinking(text string) string {
 	if !strings.Contains(text, "<|channel>") {
 		return text
 	}
@@ -642,14 +575,14 @@ func gemmaStripThinking(text string) string {
 	}
 }
 
-func stripThinkingTag(s string) string {
+func StripThinkingTag(s string) string {
 	return regexp.MustCompile(`(?s)<thinking>.*?</thinking>`).ReplaceAllString(s, "")
 }
 
-// stripWrapperTag unwraps whole-response wrappers some models emit around
+// StripWrapperTag unwraps whole-response wrappers some models emit around
 // their answer (e.g. <answer>…</answer>) and strips leading code-fence
 // language markers ("plaintext", "text") some models prepend.
-func stripWrapperTag(s string) string {
+func StripWrapperTag(s string) string {
 	s = strings.TrimSpace(s)
 	if m := regexp.MustCompile(`^<(commit|answer|message|title)>`).FindString(s); m != "" {
 		end := regexp.MustCompile(`</(commit|answer|message|title)>`).FindStringIndex(s)
@@ -664,18 +597,27 @@ func stripWrapperTag(s string) string {
 	return s
 }
 
-// stripOutputNoise trims surrounding quotes/backticks the model sometimes
+// StripOutputNoise trims surrounding quotes/backticks the model sometimes
 // wraps responses in.
-func stripOutputNoise(s string) string {
+func StripOutputNoise(s string) string {
 	return strings.TrimSpace(strings.Trim(s, "'\"`"))
 }
 
-func ctxBg() context.Context { return context.Background() }
+func CtxBg() context.Context { return context.Background() }
 
-// endOfMessage is the sentinel line appended after one-shot output so
+// SerializeGeneration runs fn while holding the single-GPU generation
+// lock, so non-streaming callers (the web fact-check) cannot interleave
+// with streaming turns.
+func SerializeGeneration(fn func()) {
+	genMu.Lock()
+	defer genMu.Unlock()
+	fn()
+}
+
+// EndOfMessage is the sentinel line appended after one-shot output so
 // stream consumers (chat/server.py) know the response is complete even
 // when the final line looks like ordinary text.
-const endOfMessage = "[END_OF_MESSAGE]"
+const EndOfMessage = "[END_OF_MESSAGE]"
 
 // Generation parameters for chat. Higher temperature than gmitllm's 0.2 —
 // conversation benefits from a little more variety. The maxTokens cap

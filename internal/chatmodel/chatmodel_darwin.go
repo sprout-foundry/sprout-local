@@ -1,6 +1,6 @@
 //go:build darwin && arm64 && cgo
 
-package main
+package chatmodel
 
 // Register all sinter model architectures on Apple Silicon (MLX backend).
 import (

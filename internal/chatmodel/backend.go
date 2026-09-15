@@ -1,4 +1,4 @@
-package main
+package chatmodel
 
 import (
 	"log"
@@ -6,12 +6,13 @@ import (
 	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
-// modelBackend probes the sinter model at startup and returns
+// ModelBackend probes the sinter model at startup and returns
 // (engineLabel, modelLabel) for the status line. Fatals with an actionable
 // message when no MLX-format model directory resolves — sinter in-process
-// inference is the only engine.
-func modelBackend() (engine, model string) {
-	dir := resolveModelDir()
+// inference is the only engine. Callers set the session tool protocol for
+// the returned directory (chatmodel must not depend on the tools package).
+func ModelBackend() (engine, model string) {
+	dir := paths.ResolveModelDir()
 	if dir == "" {
 		log.Fatalf("No local model found.\n"+
 			"Checked the models root: %s (no model directories there).\n"+
@@ -21,6 +22,5 @@ func modelBackend() (engine, model string) {
 	if _, err := loadSinterModel(); err != nil {
 		log.Fatalf("Sinter failed to load %s: %v", dir, err)
 	}
-	setSessionModelProtocol(dir)
 	return "sinter", dir
 }

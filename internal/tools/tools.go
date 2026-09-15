@@ -1,4 +1,4 @@
-package main
+package tools
 
 // ---------------------------------------------------------------------------
 // tools.go — minimal tool calling for chatllm.
@@ -40,96 +40,96 @@ import (
 // are declared; -max-steps / -max-tokens flags and SPROUT_LOCAL_* env
 // vars override them (see config.InitTunables and main.go).
 
-// toolSpec describes one tool: declaration fields (name, description,
+// ToolSpec describes one tool: declaration fields (name, description,
 // parameters) plus the native Go implementation.
-type toolSpec struct {
-	name        string
-	description string
-	parameters  []toolParam
-	run         func(ctx context.Context, args map[string]string) (string, error)
+type ToolSpec struct {
+	Name        string
+	Description string
+	Parameters  []ToolParam
+	Run         func(ctx context.Context, args map[string]string) (string, error)
 }
 
-type toolParam struct {
-	name        string
-	typeName    string
-	description string
-	required    bool
+type ToolParam struct {
+	Name        string
+	TypeName    string
+	Description string
+	Required    bool
 }
 
 // toolRegistry is the session's tool set. Deterministic order (read →
 // write → edit → list → info → run → fetch) keeps the prompt stable for
 // sinter's prefix cache.
-var toolRegistry = []toolSpec{
+var toolRegistry = []ToolSpec{
 	{
-		name:        "read_file",
-		description: "Read a text file. Use this to inspect existing files.",
-		parameters: []toolParam{
-			{name: "path", typeName: "string", description: "File path", required: true},
+		Name:        "read_file",
+		Description: "Read a text file. Use this to inspect existing files.",
+		Parameters: []ToolParam{
+			{Name: "path", TypeName: "string", Description: "File path", Required: true},
 		},
-		run: toolRunReadFile,
+		Run: toolRunReadFile,
 	},
 	{
-		name:        "write_file",
-		description: "Create or overwrite a file with the given content.",
-		parameters: []toolParam{
-			{name: "path", typeName: "string", description: "File path", required: true},
-			{name: "content", typeName: "string", description: "Full file content", required: true},
+		Name:        "write_file",
+		Description: "Create or overwrite a file with the given content.",
+		Parameters: []ToolParam{
+			{Name: "path", TypeName: "string", Description: "File path", Required: true},
+			{Name: "content", TypeName: "string", Description: "Full file content", Required: true},
 		},
-		run: toolRunWriteFile,
+		Run: toolRunWriteFile,
 	},
 	{
-		name:        "edit_file",
-		description: "Replace text in an existing file. old_text must match exactly and appear exactly once; new_text replaces it. Use empty new_text to delete.",
-		parameters: []toolParam{
-			{name: "path", typeName: "string", description: "File path", required: true},
-			{name: "old_text", typeName: "string", description: "Exact text to find", required: true},
-			{name: "new_text", typeName: "string", description: "Replacement text; empty deletes old_text", required: false},
+		Name:        "edit_file",
+		Description: "Replace text in an existing file. old_text must match exactly and appear exactly once; new_text replaces it. Use empty new_text to delete.",
+		Parameters: []ToolParam{
+			{Name: "path", TypeName: "string", Description: "File path", Required: true},
+			{Name: "old_text", TypeName: "string", Description: "Exact text to find", Required: true},
+			{Name: "new_text", TypeName: "string", Description: "Replacement text; empty deletes old_text", Required: false},
 		},
-		run: toolRunEditFile,
+		Run: toolRunEditFile,
 	},
 	{
-		name:        "list_dir",
-		description: "List a directory's contents. Directories first (trailing /), then files with sizes.",
-		parameters: []toolParam{
-			{name: "path", typeName: "string", description: "Directory to list (default: current directory)", required: false},
+		Name:        "list_dir",
+		Description: "List a directory's contents. Directories first (trailing /), then files with sizes.",
+		Parameters: []ToolParam{
+			{Name: "path", TypeName: "string", Description: "Directory to list (default: current directory)", Required: false},
 		},
-		run: toolRunListDir,
+		Run: toolRunListDir,
 	},
 	{
-		name:        "file_info",
-		description: "Check whether a path exists and report its type, size, and modified time without reading it.",
-		parameters: []toolParam{
-			{name: "path", typeName: "string", description: "Path to check", required: true},
+		Name:        "file_info",
+		Description: "Check whether a path exists and report its type, size, and modified time without reading it.",
+		Parameters: []ToolParam{
+			{Name: "path", TypeName: "string", Description: "Path to check", Required: true},
 		},
-		run: toolRunFileInfo,
+		Run: toolRunFileInfo,
 	},
 	{
-		name: "run_command",
-		description: "Run one shell command via /bin/sh and return stdout+stderr combined. " +
+		Name: "run_command",
+		Description: "Run one shell command via /bin/sh and return stdout+stderr combined. " +
 			"Pipes and quoted arguments work when the user confirms the command, e.g. `ifconfig | grep inet`. " +
 			"For quick lookups (ls, cat, grep, git status, ifconfig, …). " +
 			"Chaining with ; & && || and file redirects (>, >>, <, <<) are not available — " +
 			"stderr is captured automatically, so no 2>/dev/null is needed. " +
 			"Requires user confirmation at runtime.",
-		parameters: []toolParam{
-			{name: "command", typeName: "string", description: "The shell command line", required: true},
+		Parameters: []ToolParam{
+			{Name: "command", TypeName: "string", Description: "The shell command line", Required: true},
 		},
-		run: toolRunCommand,
+		Run: toolRunCommand,
 	},
 	{
-		name:        "web_fetch",
-		description: "Fetch a web page and return its readable text. Use for current information or URLs the user shares.",
-		parameters: []toolParam{
-			{name: "url", typeName: "string", description: "URL to fetch", required: true},
+		Name:        "web_fetch",
+		Description: "Fetch a web page and return its readable text. Use for current information or URLs the user shares.",
+		Parameters: []ToolParam{
+			{Name: "url", TypeName: "string", Description: "URL to fetch", Required: true},
 		},
-		run: toolRunWebFetch,
+		Run: toolRunWebFetch,
 	},
 }
 
-// toolDeclJSON renders a toolSpec as the JSON declaration object the chat
+// toolDeclJSON renders a ToolSpec as the JSON declaration object the chat
 // template expects inside <tools>…</tools> (name/description/parameters
 // with JSON-schema types).
-func toolDeclJSON(t toolSpec) string {
+func toolDeclJSON(t ToolSpec) string {
 	type param struct {
 		Type        string `json:"type"`
 		Description string `json:"description"`
@@ -145,27 +145,27 @@ func toolDeclJSON(t toolSpec) string {
 		} `json:"parameters"`
 	}
 	var d decl
-	d.Name = t.name
-	d.Description = t.description
+	d.Name = t.Name
+	d.Description = t.Description
 	d.Parameters.Type = "object"
 	d.Parameters.Properties = props{}
-	for _, p := range t.parameters {
-		d.Parameters.Properties[p.name] = param{Type: p.typeName, Description: p.description}
-		if p.required {
-			d.Parameters.Required = append(d.Parameters.Required, p.name)
+	for _, p := range t.Parameters {
+		d.Parameters.Properties[p.Name] = param{Type: p.TypeName, Description: p.Description}
+		if p.Required {
+			d.Parameters.Required = append(d.Parameters.Required, p.Name)
 		}
 	}
 	b, err := json.Marshal(d)
 	if err != nil {
-		return fmt.Sprintf(`{"name":%q,"description":%q}`, t.name, t.description)
+		return fmt.Sprintf(`{"name":%q,"description":%q}`, t.Name, t.Description)
 	}
 	return string(b)
 }
 
-// renderToolCallText renders one tool call in the model's native markup.
+// RenderToolCallText renders one tool call in the model's native markup.
 // indentFirst is true when content precedes the call (template: two
 // newlines before the first block).
-func renderToolCallText(name string, args map[string]string, afterContent bool) string {
+func RenderToolCallText(name string, args map[string]string, afterContent bool) string {
 	var sb strings.Builder
 	if afterContent {
 		sb.WriteString("\n\n")
@@ -178,9 +178,9 @@ func renderToolCallText(name string, args map[string]string, afterContent bool) 
 	return sb.String()
 }
 
-// appendToolResult appends a tool result as a user-role <tool_response>
+// AppendToolResult appends a tool result as a user-role <tool_response>
 // message, matching chat_template.jinja's rendering of role=tool turns.
-func appendToolResult(out []llm.ChatMessage, content string) []llm.ChatMessage {
+func AppendToolResult(out []llm.ChatMessage, content string) []llm.ChatMessage {
 	return append(out, llm.ChatMessage{
 		Role:    "user",
 		Content: "<tool_response>\n" + content + "\n</tool_response>",
@@ -190,16 +190,16 @@ func appendToolResult(out []llm.ChatMessage, content string) []llm.ChatMessage {
 // renderToolPromptBlock renders the "# Tools" block for arbitrary specs —
 // the shared body behind toolPromptBlock (static registry) and
 // toolPromptBlockFromSeed (dynamic, from the executor).
-func renderToolPromptBlock(specs []toolSpec) string {
-	return renderToolPromptBlockFor(specs, "qwen")
+func renderToolPromptBlock(specs []ToolSpec) string {
+	return RenderToolPromptBlockFor(specs, "qwen")
 }
 
-// renderToolPromptBlockFor renders the "# Tools" block in either supported
+// RenderToolPromptBlockFor renders the "# Tools" block in either supported
 // protocol. "qwen" is the qwen3.5 <tool_call>/<function=name> markup;
 // "minicpm5" is MiniCPM5's native format — <function name="…"><param
 // name="…">v</param></function> inside <tools>…</tools>, per its official
 // chat_template.jinja (tool usage guidelines quoted from the template).
-func renderToolPromptBlockFor(specs []toolSpec, protocol string) string {
+func RenderToolPromptBlockFor(specs []ToolSpec, protocol string) string {
 	if protocol == "minicpm5" {
 		var sb strings.Builder
 		sb.WriteString("# Tools\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>")
@@ -226,10 +226,10 @@ Reminder:
 	return sb.String()
 }
 
-// miniCPM5ToolDeclJSON renders a toolSpec as the JSON declaration MiniCPM5's
+// miniCPM5ToolDeclJSON renders a ToolSpec as the JSON declaration MiniCPM5's
 // template expects (its template serializes each tool with tojson — the
 // OpenAI-style function envelope).
-func miniCPM5ToolDeclJSON(t toolSpec) string {
+func miniCPM5ToolDeclJSON(t ToolSpec) string {
 	type param struct {
 		Type        string `json:"type"`
 		Description string `json:"description"`
@@ -250,19 +250,19 @@ func miniCPM5ToolDeclJSON(t toolSpec) string {
 	}
 	var d decl
 	d.Type = "function"
-	d.Function.Name = t.name
-	d.Function.Description = t.description
+	d.Function.Name = t.Name
+	d.Function.Description = t.Description
 	d.Function.Parameters.Type = "object"
 	d.Function.Parameters.Properties = props{}
-	for _, p := range t.parameters {
-		d.Function.Parameters.Properties[p.name] = param{Type: p.typeName, Description: p.description}
-		if p.required {
-			d.Function.Parameters.Required = append(d.Function.Parameters.Required, p.name)
+	for _, p := range t.Parameters {
+		d.Function.Parameters.Properties[p.Name] = param{Type: p.TypeName, Description: p.Description}
+		if p.Required {
+			d.Function.Parameters.Required = append(d.Function.Parameters.Required, p.Name)
 		}
 	}
 	b, err := json.Marshal(d)
 	if err != nil {
-		return fmt.Sprintf(`{"type":"function","function":{"name":%q,"description":%q}}`, t.name, t.description)
+		return fmt.Sprintf(`{"type":"function","function":{"name":%q,"description":%q}}`, t.Name, t.Description)
 	}
 	return string(b)
 }
@@ -270,17 +270,17 @@ func miniCPM5ToolDeclJSON(t toolSpec) string {
 // toolPromptBlock renders the "# Tools" system block for the static
 // registry in the session's tool protocol.
 func toolPromptBlock() string {
-	return renderToolPromptBlockFor(toolRegistry, toolProtocol())
+	return RenderToolPromptBlockFor(toolRegistry, ToolProtocol())
 }
 
 // ─── Protocol selection ──────────────────────────────────────────────────
 
-// toolProtocolForModelDir reports the tool-call protocol a model directory
+// ToolProtocolForModelDir reports the tool-call protocol a model directory
 // speaks, from config.json model_type + tokenizer.json control tokens:
 // "minicpm5" for MiniCPM5 (native <function name="…"><param …/></function>
 // XML), "qwen" for everything else (the qwen3.5 <tool_call>/<function=name>
 // markup).
-func toolProtocolForModelDir(dir string) string {
+func ToolProtocolForModelDir(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err == nil {
 		var cfg struct {
@@ -325,28 +325,28 @@ func isMiniCPM5Tokenizer(path string) bool {
 // model directory resolves (startup, /model, /pull). Empty = qwen default.
 var sessionProtocol string
 
-// toolProtocol returns the active session's tool protocol.
-func toolProtocol() string {
+// ToolProtocol returns the active session's tool protocol.
+func ToolProtocol() string {
 	if sessionProtocol != "" {
 		return sessionProtocol
 	}
 	return "qwen"
 }
 
-// setSessionModelProtocol records the protocol for the given model directory.
-func setSessionModelProtocol(dir string) {
+// SetSessionModelProtocol records the protocol for the given model directory.
+func SetSessionModelProtocol(dir string) {
 	if dir != "" {
-		sessionProtocol = toolProtocolForModelDir(dir)
+		sessionProtocol = ToolProtocolForModelDir(dir)
 	}
 }
 
 // ─── Parsing ─────────────────────────────────────────────────────────────
 
-// parsedToolCall is one extracted call: tool name + arguments.
-type parsedToolCall struct {
-	name      string
-	args      map[string]string
-	truncated bool // ran out of tokens mid-call; recovered best-effort
+// ParsedToolCall is one extracted call: tool name + arguments.
+type ParsedToolCall struct {
+	Name      string
+	Args      map[string]string
+	Truncated bool // ran out of tokens mid-call; recovered best-effort
 }
 
 // extractToolCalls finds tool-call blocks in a model response using the
@@ -354,12 +354,12 @@ type parsedToolCall struct {
 // nothing, so a model that drifts between markups still gets caught).
 // Text outside the blocks is returned too, so the caller can show it as
 // the assistant's preamble.
-func extractToolCalls(text string) (remaining string, calls []parsedToolCall) {
-	return extractToolCallsFor(text, toolProtocol())
+func extractToolCalls(text string) (remaining string, calls []ParsedToolCall) {
+	return ExtractToolCallsFor(text, ToolProtocol())
 }
 
-// extractToolCallsFor is extractToolCalls with an explicit protocol.
-func extractToolCallsFor(text, protocol string) (remaining string, calls []parsedToolCall) {
+// ExtractToolCallsFor is extractToolCalls with an explicit protocol.
+func ExtractToolCallsFor(text, protocol string) (remaining string, calls []ParsedToolCall) {
 	if protocol == "minicpm5" {
 		remaining, calls = extractMiniCPM5Calls(text)
 		if len(calls) > 0 {
@@ -374,7 +374,7 @@ func extractToolCallsFor(text, protocol string) (remaining string, calls []parse
 
 // extractMiniCPM5Calls finds every <function name="…">…</function> block
 // (MiniCPM5 native format) in a model response.
-func extractMiniCPM5Calls(text string) (remaining string, calls []parsedToolCall) {
+func extractMiniCPM5Calls(text string) (remaining string, calls []ParsedToolCall) {
 	var plain strings.Builder
 	rest := text
 	for {
@@ -385,7 +385,7 @@ func extractMiniCPM5Calls(text string) (remaining string, calls []parsedToolCall
 		}
 		plain.WriteString(rest[:start])
 		body := rest[start:end]
-		if c := parseMiniCPM5CallBody(body); c.name != "" {
+		if c := parseMiniCPM5CallBody(body); c.Name != "" {
 			calls = append(calls, c)
 		}
 		if end >= len(rest) {
@@ -415,7 +415,7 @@ func findMiniCPM5Call(s string) (start, end int) {
 }
 
 // extractQwenToolCalls is the original qwen-protocol block scanner.
-func extractQwenToolCalls(text string) (remaining string, calls []parsedToolCall) {
+func extractQwenToolCalls(text string) (remaining string, calls []ParsedToolCall) {
 	var plain strings.Builder
 	rest := text
 	for {
@@ -431,13 +431,13 @@ func extractQwenToolCalls(text string) (remaining string, calls []parsedToolCall
 		if end < 0 {
 			// Unterminated block: the model ran out of tokens mid-call.
 			// Treat the remainder as a call attempt anyway.
-			if c := parseToolCallBody(rest); c.name != "" {
+			if c := parseToolCallBody(rest); c.Name != "" {
 				calls = append(calls, c)
 			}
 			rest = ""
 			break
 		}
-		if c := parseToolCallBody(rest[:end]); c.name != "" {
+		if c := parseToolCallBody(rest[:end]); c.Name != "" {
 			calls = append(calls, c)
 		}
 		rest = rest[end+len("</tool_call>"):]
@@ -446,13 +446,13 @@ func extractQwenToolCalls(text string) (remaining string, calls []parsedToolCall
 }
 
 // parseToolCallBody parses "<function=name>…</function>" into a call.
-func parseToolCallBody(body string) parsedToolCall {
+func parseToolCallBody(body string) ParsedToolCall {
 	body = strings.TrimSpace(body)
 	fm := regexp.MustCompile(`(?s)<function=([A-Za-z0-9_.-]+)>(.*)</function>`).FindStringSubmatch(body)
 	if fm == nil {
 		// MiniCPM5 protocol: <function name="tool">…</param></function>.
 		// Try it before declaring the call malformed.
-		if c := parseMiniCPM5CallBody(body); c.name != "" {
+		if c := parseMiniCPM5CallBody(body); c.Name != "" {
 			return c
 		}
 		// Unterminated call (ran out of tokens mid-parameter — common when
@@ -460,19 +460,19 @@ func parseToolCallBody(body string) parsedToolCall {
 		// parameters completed: a truncated write beats no write.
 		fm2 := regexp.MustCompile(`(?s)^\s*<function=([A-Za-z0-9_.-]+)>(.*)$`).FindStringSubmatch(body)
 		if fm2 == nil {
-			return parsedToolCall{}
+			return ParsedToolCall{}
 		}
-		call := parsedToolCall{name: fm2[1], args: map[string]string{}, truncated: true}
+		call := ParsedToolCall{Name: fm2[1], Args: map[string]string{}, Truncated: true}
 		pm := regexp.MustCompile(`(?s)<parameter=([A-Za-z0-9_.-]+)>\n?(.*?)(?:</parameter>|$)`).FindAllStringSubmatch(fm2[2], -1)
 		for _, p := range pm {
-			call.args[p[1]] = strings.TrimSpace(p[2])
+			call.Args[p[1]] = strings.TrimSpace(p[2])
 		}
 		return call
 	}
-	call := parsedToolCall{name: fm[1], args: map[string]string{}}
+	call := ParsedToolCall{Name: fm[1], Args: map[string]string{}}
 	pm := regexp.MustCompile(`(?s)<parameter=([A-Za-z0-9_.-]+)>\n?(.*?)</parameter>`).FindAllStringSubmatch(fm[2], -1)
 	for _, p := range pm {
-		call.args[p[1]] = strings.TrimSpace(p[2])
+		call.Args[p[1]] = strings.TrimSpace(p[2])
 	}
 	return call
 }
@@ -487,24 +487,24 @@ var miniCPM5ParamRe = regexp.MustCompile(`(?s)<param\s+name="([A-Za-z0-9_.-]+)"\
 
 // parseMiniCPM5CallBody parses MiniCPM5's <function name="…">…</function>
 // into a call. Returns the zero call when the body doesn't use that format.
-func parseMiniCPM5CallBody(body string) parsedToolCall {
+func parseMiniCPM5CallBody(body string) ParsedToolCall {
 	fm := miniCPM5CallRe.FindStringSubmatch(strings.TrimSpace(body))
 	if fm == nil {
 		// Unterminated (out of tokens mid-call): recover the name and any
 		// complete params.
 		fm2 := regexp.MustCompile(`(?s)^\s*<function\s+name="([A-Za-z0-9_.-]+)"\s*>(.*)$`).FindStringSubmatch(body)
 		if fm2 == nil {
-			return parsedToolCall{}
+			return ParsedToolCall{}
 		}
-		call := parsedToolCall{name: fm2[1], args: map[string]string{}, truncated: true}
+		call := ParsedToolCall{Name: fm2[1], Args: map[string]string{}, Truncated: true}
 		for _, p := range miniCPM5ParamRe.FindAllStringSubmatch(fm2[2], -1) {
-			call.args[p[1]] = strings.TrimSpace(firstNonEmpty(p[2], p[3]))
+			call.Args[p[1]] = strings.TrimSpace(firstNonEmpty(p[2], p[3]))
 		}
 		return call
 	}
-	call := parsedToolCall{name: fm[1], args: map[string]string{}}
+	call := ParsedToolCall{Name: fm[1], Args: map[string]string{}}
 	for _, p := range miniCPM5ParamRe.FindAllStringSubmatch(fm[2], -1) {
-		call.args[p[1]] = strings.TrimSpace(firstNonEmpty(p[2], p[3]))
+		call.Args[p[1]] = strings.TrimSpace(firstNonEmpty(p[2], p[3]))
 	}
 	return call
 }
@@ -519,11 +519,11 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// renderMiniCPM5ToolCallText renders one tool call in MiniCPM5's native
+// RenderMiniCPM5ToolCallText renders one tool call in MiniCPM5's native
 // markup (the format its own template teaches and its parser expects).
 // Values containing <, & or newlines are wrapped in CDATA, matching the
 // template's rule.
-func renderMiniCPM5ToolCallText(name string, args map[string]string, afterContent bool) string {
+func RenderMiniCPM5ToolCallText(name string, args map[string]string, afterContent bool) string {
 	var sb strings.Builder
 	if afterContent {
 		sb.WriteString("\n\n")
@@ -558,34 +558,34 @@ func sortedArgKeys(args map[string]string) []string {
 // covers pure Go failures (unknown tool, sandbox violation); tool-level
 // errors (missing file, failed command) are reported *as the result text*
 // so the model can see them and react.
-func execToolCall(ctx context.Context, call parsedToolCall) (string, error) {
-	var spec *toolSpec
+func execToolCall(ctx context.Context, call ParsedToolCall) (string, error) {
+	var spec *ToolSpec
 	for i := range toolRegistry {
-		if toolRegistry[i].name == call.name {
+		if toolRegistry[i].Name == call.Name {
 			spec = &toolRegistry[i]
 			break
 		}
 	}
 	if spec == nil {
-		return "", fmt.Errorf("unknown tool %q", call.name)
+		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
 	// Required-argument check (all current tools take only required args).
-	for _, p := range spec.parameters {
-		if p.required && strings.TrimSpace(call.args[p.name]) == "" {
-			return "", fmt.Errorf("tool %q: missing required parameter %q", call.name, p.name)
+	for _, p := range spec.Parameters {
+		if p.Required && strings.TrimSpace(call.Args[p.Name]) == "" {
+			return "", fmt.Errorf("tool %q: missing required parameter %q", call.Name, p.Name)
 		}
 	}
-	res, err := spec.run(ctx, call.args)
+	res, err := spec.Run(ctx, call.Args)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	return res, nil
 }
 
-// resolveToolPath resolves a tool path argument and enforces the sandbox:
+// ResolveToolPath resolves a tool path argument and enforces the sandbox:
 // relative paths stay under the working directory, absolute paths must be
 // the workspace, /tmp, /private/tmp (darwin symlink), or $TMPDIR.
-func resolveToolPath(p string) (string, error) {
+func ResolveToolPath(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", fmt.Errorf("empty path")
@@ -659,11 +659,19 @@ func truncateToolResult(s string) string {
 	return s[:config.ToolResultCap] + "\n…[truncated]"
 }
 
-// truncateResultForDisplay shortens a tool result for the one-line REPL
+// firstLine returns the first line of s, for one-line status display.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// TruncateResultForDisplay shortens a tool result for the one-line REPL
 // status line (full text still goes to the model). The raw first line is
 // often a comment banner ("##" in /etc/hosts), which tells the approving
 // human nothing — skip lines that carry no content before falling back.
-func truncateResultForDisplay(s string) string {
+func TruncateResultForDisplay(s string) string {
 	const max = 120
 	for _, line := range strings.Split(s, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -693,11 +701,11 @@ func toolResultMessage(name, result string) llm.ChatMessage {
 
 // ─── /tools command ──────────────────────────────────────────────────────
 
-// handleToolsCommand shows/toggles tool mode. "yolo" also skips the
+// HandleToolsCommand shows/toggles tool mode. "yolo" also skips the
 // run_command confirmation prompt. The choice persists in tools.json and
 // is restored on the next launch.
-func handleToolsCommand(args string) {
-	n, errs := reloadSkills()
+func HandleToolsCommand(args string) {
+	n, errs := ReloadSkills()
 	for _, err := range errs {
 		fmt.Printf("%s skill: %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 	}
@@ -706,7 +714,7 @@ func handleToolsCommand(args string) {
 		if !config.ToolsRequested {
 			fmt.Printf("Tools are off. /tools on enables: %s\n", toolNames())
 			if n > 0 {
-				fmt.Printf("Installed skill%s: %s\n", plural(n), skillNames())
+				fmt.Printf("Installed skill%s: %s\n", Plural(n), skillNames())
 			}
 			return
 		}
@@ -747,7 +755,7 @@ func handleToolsCommand(args string) {
 func toolNames() string {
 	names := make([]string, 0, len(toolRegistry))
 	for _, t := range toolRegistry {
-		names = append(names, t.name)
+		names = append(names, t.Name)
 	}
 	return strings.Join(names, ", ")
 }
@@ -761,8 +769,8 @@ func skillNames() string {
 	return strings.Join(names, ", ")
 }
 
-// plural returns "" or "s".
-func plural(n int) string {
+// Plural returns "" or "s".
+func Plural(n int) string {
 	if n == 1 {
 		return ""
 	}
@@ -772,7 +780,7 @@ func plural(n int) string {
 // ─── Tool implementations ────────────────────────────────────────────────
 
 func toolRunReadFile(ctx context.Context, args map[string]string) (string, error) {
-	path, err := resolveToolPath(args["path"])
+	path, err := ResolveToolPath(args["path"])
 	if err != nil {
 		return "", err
 	}
@@ -804,7 +812,7 @@ func unescapeModelText(s string) string {
 }
 
 func toolRunWriteFile(ctx context.Context, args map[string]string) (string, error) {
-	path, err := resolveToolPath(args["path"])
+	path, err := ResolveToolPath(args["path"])
 	if err != nil {
 		return "", err
 	}
@@ -827,7 +835,7 @@ func toolRunWriteFile(ctx context.Context, args map[string]string) (string, erro
 // second location: zero matches and multiple matches are both errors the
 // model can self-correct from (re-read, widen the context).
 func toolRunEditFile(ctx context.Context, args map[string]string) (string, error) {
-	path, err := resolveToolPath(args["path"])
+	path, err := ResolveToolPath(args["path"])
 	if err != nil {
 		return "", err
 	}
@@ -866,7 +874,7 @@ func toolRunListDir(ctx context.Context, args map[string]string) (string, error)
 	if p == "" {
 		p = "."
 	}
-	path, err := resolveToolPath(p)
+	path, err := ResolveToolPath(p)
 	if err != nil {
 		return "", err
 	}
@@ -919,7 +927,7 @@ func toolRunListDir(ctx context.Context, args map[string]string) (string, error)
 // toolRunFileInfo stats a path without reading it. A missing path is a
 // normal answer (useful to the model), not a Go error.
 func toolRunFileInfo(ctx context.Context, args map[string]string) (string, error) {
-	path, err := resolveToolPath(args["path"])
+	path, err := ResolveToolPath(args["path"])
 	if err != nil {
 		return "", err
 	}

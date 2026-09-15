@@ -1,4 +1,4 @@
-package main
+package tools
 
 // ---------------------------------------------------------------------------
 // seedexecutor.go — the chatllm tool set as a seed core.ToolExecutor.
@@ -31,6 +31,14 @@ type toolExecutor struct {
 // run_command friction. In-memory only: a fresh process asks again.
 var sessionApprovedCommands []string
 
+// AddSessionApprovedCommand records a command word the user approved with
+// "always" (a) at the y/N prompt; it skips further prompts for the rest of
+// the session. Surfaces call it from their UI.Confirm adapters (the REPL's
+// termUI does).
+func AddSessionApprovedCommand(word string) {
+	sessionApprovedCommands = append(sessionApprovedCommands, word)
+}
+
 // commandApproved reports whether the command line's first word was
 // session-approved.
 func commandApproved(cmdline string) bool {
@@ -46,7 +54,7 @@ func commandApproved(cmdline string) bool {
 	return false
 }
 
-func newToolExecutor(ui core.UI) *toolExecutor {
+func NewToolExecutor(ui core.UI) *toolExecutor {
 	if ui == nil {
 		ui = core.NoopUI
 	}
@@ -66,10 +74,10 @@ func (e *toolExecutor) GetTools() []core.Tool {
 		}
 		props := map[string]interface{}{}
 		required := []string{}
-		for _, p := range t.parameters {
-			props[p.name] = map[string]string{"type": p.typeName, "description": p.description}
-			if p.required {
-				required = append(required, p.name)
+		for _, p := range t.Parameters {
+			props[p.Name] = map[string]string{"type": p.TypeName, "description": p.Description}
+			if p.Required {
+				required = append(required, p.Name)
 			}
 		}
 		params["properties"] = props
@@ -77,8 +85,8 @@ func (e *toolExecutor) GetTools() []core.Tool {
 		out = append(out, core.Tool{
 			Type: "function",
 			Function: core.ToolFunction{
-				Name:        t.name,
-				Description: t.description,
+				Name:        t.Name,
+				Description: t.Description,
 				Parameters:  params,
 			},
 		})
@@ -108,7 +116,7 @@ func (e *toolExecutor) Execute(ctx context.Context, calls []core.ToolCall) []cor
 	return out
 }
 
-// run dispatches one call by name: built-ins first, then skills.
+// run dispatches one call by Name: built-ins first, then skills.
 // run_command consults UI.Confirm unless the yolo bypass is set; skills
 // are pinned command lines the user installed, so they run without an
 // extra prompt (installing the skill was the consent).
@@ -134,10 +142,10 @@ func (e *toolExecutor) run(ctx context.Context, name string, args map[string]str
 }
 
 // runSpec validates parameters and runs a built-in tool spec.
-func (e *toolExecutor) runSpec(ctx context.Context, spec *toolSpec, args map[string]string, name string) (string, error) {
-	for _, p := range spec.parameters {
-		if p.required && strings.TrimSpace(args[p.name]) == "" {
-			return "", fmt.Errorf("missing required parameter %q", p.name)
+func (e *toolExecutor) runSpec(ctx context.Context, spec *ToolSpec, args map[string]string, name string) (string, error) {
+	for _, p := range spec.Parameters {
+		if p.Required && strings.TrimSpace(args[p.Name]) == "" {
+			return "", fmt.Errorf("missing required parameter %q", p.Name)
 		}
 	}
 	if name == "run_command" && !config.ToolSafetyBypass {
@@ -152,7 +160,7 @@ func (e *toolExecutor) runSpec(ctx context.Context, spec *toolSpec, args map[str
 			}
 		}
 	}
-	return spec.run(ctx, args)
+	return spec.Run(ctx, args)
 }
 
 // result wraps a tool outcome as a seed tool message.

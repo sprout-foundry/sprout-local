@@ -1,10 +1,26 @@
-package main
+package paths
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// makeFakeModelDir creates a directory that passes IsModelDir (config.json
+// + tokenizer.json + a *.safetensors file). Returns the dir path.
+func makeFakeModelDir(t *testing.T, root, name string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"config.json", "tokenizer.json", "model.safetensors"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
 
 // TestResolveModelDirEnvOrder covers the model-dir override precedence:
 // SPROUT_LOCAL_MODEL_DIR beats legacy LOCAL_MODEL_DIR, and both beat the
@@ -19,26 +35,26 @@ func TestResolveModelDirEnvOrder(t *testing.T) {
 	// SPROUT_LOCAL_MODEL_DIR wins over both the legacy var and the root.
 	t.Setenv("SPROUT_LOCAL_MODEL_DIR", alpha)
 	t.Setenv("LOCAL_MODEL_DIR", rootTuned)
-	if got := resolveModelDir(); got != alpha {
+	if got := ResolveModelDir(); got != alpha {
 		t.Errorf("SPROUT_LOCAL_MODEL_DIR lost: got %q, want %q", got, alpha)
 	}
 	// Legacy LOCAL_MODEL_DIR alone is still honored.
 	t.Setenv("SPROUT_LOCAL_MODEL_DIR", "")
 	t.Setenv("LOCAL_MODEL_DIR", rootTuned)
-	if got := resolveModelDir(); got != rootTuned {
+	if got := ResolveModelDir(); got != rootTuned {
 		t.Errorf("legacy LOCAL_MODEL_DIR: got %q, want %q", got, rootTuned)
 	}
 	// Neither set: best installed model from the root (tuned preferred).
 	t.Setenv("LOCAL_MODEL_DIR", "")
-	if got := resolveModelDir(); got != rootTuned {
+	if got := ResolveModelDir(); got != rootTuned {
 		t.Errorf("scanned root: got %q, want %q", got, rootTuned)
 	}
 }
 
 // TestBestInstalledModel covers the models-root selection: the tuned 4B
 // export is preferred, the alphabetically-first model dir is the fallback,
-// and a missing or empty root yields "" (backend.go turns that into the
-// actionable error).
+// and a missing or empty root yields "" (chatmodel's backend probe turns
+// that into the actionable error).
 func TestBestInstalledModel(t *testing.T) {
 	t.Setenv("SPROUT_LOCAL_STATE_ROOT", t.TempDir())
 	t.Setenv("SPROUT_LOCAL_MODEL_DIR", "")
@@ -49,7 +65,7 @@ func TestBestInstalledModel(t *testing.T) {
 	makeFakeModelDir(t, root, "alpha-1b")
 	tuned := makeFakeModelDir(t, root, preferredModelName)
 	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root)
-	if got := bestInstalledModel(); got != tuned {
+	if got := BestInstalledModel(); got != tuned {
 		t.Errorf("preferred: got %q, want %q", got, tuned)
 	}
 
@@ -59,7 +75,7 @@ func TestBestInstalledModel(t *testing.T) {
 	makeFakeModelDir(t, root2, "gamma-1b")
 	os.MkdirAll(filepath.Join(root2, "not-a-model"), 0o755)
 	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root2)
-	if got := bestInstalledModel(); got != beta {
+	if got := BestInstalledModel(); got != beta {
 		t.Errorf("alphabetical: got %q, want %q", got, beta)
 	}
 
@@ -67,15 +83,13 @@ func TestBestInstalledModel(t *testing.T) {
 	root3 := t.TempDir()
 	os.MkdirAll(filepath.Join(root3, "empty-dir"), 0o755)
 	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", root3)
-	if got := bestInstalledModel(); got != "" {
+	if got := BestInstalledModel(); got != "" {
 		t.Errorf("empty root: got %q, want empty", got)
 	}
 
 	// Missing root: unreadable, same result.
 	t.Setenv("SPROUT_LOCAL_MODELS_ROOT", filepath.Join(t.TempDir(), "does-not-exist"))
-	if got := bestInstalledModel(); got != "" {
+	if got := BestInstalledModel(); got != "" {
 		t.Errorf("missing root: got %q, want empty", got)
 	}
 }
-
-// makeFakeModelDir is defined in modelcmd_test.go (package main).

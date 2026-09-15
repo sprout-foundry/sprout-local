@@ -1,4 +1,4 @@
-package main
+package tools
 
 // ---------------------------------------------------------------------------
 // skills.go — user-addable tools as "skills".
@@ -17,7 +17,7 @@ package main
 // The tool takes no parameters from the model (the JSON pins the full
 // command line), so a small model can't fumble arguments; the model only
 // decides *whether* to call it. Skills join the registry between /tools
-// toggles via reloadSkills(); built-ins (tools.go) are always available.
+// toggles via ReloadSkills(); built-ins (tools.go) are always available.
 // Skills run through the seed agent loop like any other tool when /tools
 // is on.
 // ---------------------------------------------------------------------------
@@ -47,9 +47,9 @@ type skill struct {
 // skillRegistry holds the loaded skills (nil before first load).
 var skillRegistry []skill
 
-// reloadSkills reads every *.json in the skills directory. Returns the
+// ReloadSkills reads every *.json in the skills directory. Returns the
 // count and an error list (bad files are skipped, not fatal).
-func reloadSkills() (int, []error) {
+func ReloadSkills() (int, []error) {
 	skillRegistry = nil
 	dir := paths.SkillsDir()
 	entries, err := os.ReadDir(dir)
@@ -87,22 +87,22 @@ func reloadSkills() (int, []error) {
 }
 
 // lookupToolSpec finds a built-in tool by name (nil if absent).
-func lookupToolSpec(name string) *toolSpec {
+func lookupToolSpec(name string) *ToolSpec {
 	for i := range toolRegistry {
-		if toolRegistry[i].name == name {
+		if toolRegistry[i].Name == name {
 			return &toolRegistry[i]
 		}
 	}
 	return nil
 }
 
-// skillAsToolSpec converts a skill into the registry's toolSpec shape.
-func skillAsToolSpec(s skill) toolSpec {
-	return toolSpec{
-		name:        s.Name,
-		description: s.Description + " (a personal skill — no parameters)",
-		parameters:  nil,
-		run: func(ctx context.Context, args map[string]string) (string, error) {
+// skillAsToolSpec converts a skill into the registry's ToolSpec shape.
+func skillAsToolSpec(s skill) ToolSpec {
+	return ToolSpec{
+		Name:        s.Name,
+		Description: s.Description + " (a personal skill — no parameters)",
+		Parameters:  nil,
+		Run: func(ctx context.Context, args map[string]string) (string, error) {
 			return runSkillCommand(ctx, s)
 		},
 	}
@@ -111,8 +111,8 @@ func skillAsToolSpec(s skill) toolSpec {
 // activeToolSpecs returns the full tool list the model may call: built-ins
 // plus skills. Skills appear only when /tools is on (the executor is only
 // wired then).
-func activeToolSpecs() []toolSpec {
-	specs := make([]toolSpec, len(toolRegistry), len(toolRegistry)+len(skillRegistry))
+func activeToolSpecs() []ToolSpec {
+	specs := make([]ToolSpec, len(toolRegistry), len(toolRegistry)+len(skillRegistry))
 	copy(specs, toolRegistry)
 	for _, s := range skillRegistry {
 		specs = append(specs, skillAsToolSpec(s))

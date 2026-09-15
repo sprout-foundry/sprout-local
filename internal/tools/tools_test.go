@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sprout-local/internal/config"
-	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 )
 
 func TestExtractToolCalls(t *testing.T) {
@@ -37,10 +36,10 @@ ls -la
 	if len(calls) != 2 {
 		t.Fatalf("got %d calls, want 2", len(calls))
 	}
-	if calls[0].name != "read_file" || calls[0].args["path"] != "main.go" {
+	if calls[0].Name != "read_file" || calls[0].Args["path"] != "main.go" {
 		t.Errorf("call 0 = %+v", calls[0])
 	}
-	if calls[1].name != "run_command" || calls[1].args["command"] != "ls -la" {
+	if calls[1].Name != "run_command" || calls[1].Args["command"] != "ls -la" {
 		t.Errorf("call 1 = %+v", calls[1])
 	}
 	if strings.TrimSpace(plain) != "Let me check that.\n\n\n\nand a second one" {
@@ -53,7 +52,7 @@ ls -la
 
 func TestExtractToolCallsUnterminated(t *testing.T) {
 	_, calls := extractToolCalls("checking\n<tool_call>\n<function=read_file>\n<parameter=path>\nmain.go\n</parameter>\n</function>\n")
-	if len(calls) != 1 || calls[0].name != "read_file" {
+	if len(calls) != 1 || calls[0].Name != "read_file" {
 		t.Fatalf("unterminated call not recovered: %+v", calls)
 	}
 }
@@ -100,12 +99,12 @@ func TestResolveToolPath(t *testing.T) {
 		{"", true},
 	}
 	for _, tt := range tests {
-		got, err := resolveToolPath(tt.in)
+		got, err := ResolveToolPath(tt.in)
 		if tt.wantErr && err == nil {
-			t.Errorf("resolveToolPath(%q) = %q, want error", tt.in, got)
+			t.Errorf("ResolveToolPath(%q) = %q, want error", tt.in, got)
 		}
 		if !tt.wantErr && err != nil {
-			t.Errorf("resolveToolPath(%q) errored: %v", tt.in, err)
+			t.Errorf("ResolveToolPath(%q) errored: %v", tt.in, err)
 		}
 	}
 }
@@ -128,14 +127,14 @@ func TestToolRunWriteReadFile(t *testing.T) {
 }
 
 func TestExecToolCallUnknown(t *testing.T) {
-	_, err := execToolCall(context.Background(), parsedToolCall{name: "nope"})
+	_, err := execToolCall(context.Background(), ParsedToolCall{Name: "nope"})
 	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Errorf("want unknown-tool error, got %v", err)
 	}
 }
 
 func TestExecToolCallMissingParam(t *testing.T) {
-	_, err := execToolCall(context.Background(), parsedToolCall{name: "read_file"})
+	_, err := execToolCall(context.Background(), ParsedToolCall{Name: "read_file"})
 	if err == nil || !strings.Contains(err.Error(), "missing required parameter") {
 		t.Errorf("want missing-param error, got %v", err)
 	}
@@ -143,15 +142,15 @@ func TestExecToolCallMissingParam(t *testing.T) {
 
 func TestHandleToolsCommand(t *testing.T) {
 	// Capture nothing; just exercise the toggles.
-	handleToolsCommand("on")
+	HandleToolsCommand("on")
 	if !config.ToolsRequested || config.ToolSafetyBypass {
 		t.Errorf("/tools on → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
-	handleToolsCommand("yolo")
+	HandleToolsCommand("yolo")
 	if !config.ToolsRequested || !config.ToolSafetyBypass {
 		t.Errorf("/tools yolo → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
-	handleToolsCommand("off")
+	HandleToolsCommand("off")
 	if config.ToolsRequested || config.ToolSafetyBypass {
 		t.Errorf("/tools off → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
@@ -172,7 +171,7 @@ func TestSkills(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	n, errs := reloadSkills()
+	n, errs := ReloadSkills()
 	if n != 2 {
 		t.Errorf("loaded %d skills, want 2 (bad + colliding skipped)", n)
 	}
@@ -185,7 +184,7 @@ func TestSkills(t *testing.T) {
 
 	// Skill runs through its spec.
 	spec := skillAsToolSpec(skillRegistry[0])
-	out, err := spec.run(context.Background(), nil)
+	out, err := spec.Run(context.Background(), nil)
 	if err != nil || out != "hello world" {
 		t.Errorf("skill run = %q, %v", out, err)
 	}
@@ -194,55 +193,6 @@ func TestSkills(t *testing.T) {
 	specs := activeToolSpecs()
 	if len(specs) != len(toolRegistry)+2 {
 		t.Errorf("activeToolSpecs = %d, want %d", len(specs), len(toolRegistry)+2)
-	}
-}
-
-func TestToolStreamFilter(t *testing.T) {
-	var out strings.Builder
-	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
-	f := &toolStreamFilter{printer: printer, tools: true}
-	f.write("Let me check. <tool_call>\n<function=read_fi")
-	f.write("le>\n<parameter=path>\nmain.go\n</parameter>\n</function>\n</tool_call> done.")
-	f.close()
-	printer.Close()
-	got := out.String()
-	if strings.Contains(got, "<tool_call>") || strings.Contains(got, "function=") {
-		t.Errorf("markup leaked to display: %q", got)
-	}
-	if !strings.Contains(got, "Let me check.") || !strings.Contains(got, "done.") {
-		t.Errorf("prose lost: %q", got)
-	}
-}
-
-func TestToolStreamFilterPassThrough(t *testing.T) {
-	var out strings.Builder
-	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
-	f := &toolStreamFilter{printer: printer, tools: false}
-	f.write("plain answer, no filtering")
-	f.close()
-	printer.Close()
-	if got := out.String(); got != "plain answer, no filtering" {
-		t.Errorf("pass-through broken: %q", got)
-	}
-}
-
-// TestToolStreamFilterSeedBuffer verifies the seed feed matches the
-// terminal: markup suppressed, prose delivered to both sinks.
-func TestToolStreamFilterSeedBuffer(t *testing.T) {
-	var out strings.Builder
-	var seed strings.Builder
-	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
-	f := &toolStreamFilter{printer: printer, tools: true, onDelta: func(s string) { seed.WriteString(s) }}
-	f.write("Check. <tool_call>\n<function=read_file>\n<parameter=path>\nx\n</parameter>\n</function>\n</tool_call> Done.")
-	f.close()
-	printer.Close()
-	for _, sink := range map[string]string{"term": out.String(), "seed": seed.String()} {
-		if strings.Contains(sink, "<tool_call>") {
-			t.Errorf("%s got markup: %q", sink, sink)
-		}
-		if !strings.Contains(sink, "Check.") || !strings.Contains(sink, "Done.") {
-			t.Errorf("%s lost prose: %q", sink, sink)
-		}
 	}
 }
 
@@ -453,8 +403,8 @@ func TestToolRegistryOrder(t *testing.T) {
 		t.Fatalf("registry has %d tools, want %d", len(toolRegistry), len(want))
 	}
 	for i, name := range want {
-		if toolRegistry[i].name != name {
-			t.Errorf("registry[%d] = %q, want %q", i, toolRegistry[i].name, name)
+		if toolRegistry[i].Name != name {
+			t.Errorf("registry[%d] = %q, want %q", i, toolRegistry[i].Name, name)
 		}
 	}
 }

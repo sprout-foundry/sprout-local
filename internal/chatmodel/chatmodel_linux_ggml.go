@@ -1,6 +1,6 @@
 //go:build linux && (arm64 || amd64) && cgo && ggml
 
-package main
+package chatmodel
 
 // Register the model architectures sinter supports on Linux via the GGML
 // backend (Termux builds with -tags ggml). gemma4 is excluded: every file
