@@ -1,4 +1,4 @@
-package main
+package repl
 
 // ---------------------------------------------------------------------------
 // firstrun.go — first-run model walkthrough for the bare REPL.
@@ -46,7 +46,7 @@ const firstRunAttempts = 3
 // the process (os.Exit) for every terminal outcome: success is signaled via
 // the returned true before any exit, "later/skip" exits 0, and EOF or
 // exhausting the attempt budget exits 1.
-func runFirstRun(ctx context.Context, r *bufio.Reader) bool {
+func FirstRun(ctx context.Context, r *bufio.Reader) bool {
 	root := paths.ModelsRoot()
 	ram := sysinfo.TotalSystemRAM()
 	suggested := catalog.SuggestedForRAM(ram)

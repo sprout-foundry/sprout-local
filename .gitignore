@@ -1,5 +1,5 @@
 # Build artifacts
-sprout-local
+/sprout-local
 *.log
 
 # Session state

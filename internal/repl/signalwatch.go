@@ -1,4 +1,4 @@
-package main
+package repl
 
 // ---------------------------------------------------------------------------
 // Ctrl-C handling: the first signal cancels the in-flight generation; a
@@ -18,7 +18,7 @@ var signalCh = make(chan os.Signal, 1)
 // startSignalWatch installs the SIGINT handler once and runs a goroutine
 // that cancels the active generation context on the first Ctrl-C and exits
 // on the second within the grace window.
-func startSignalWatch() {
+func StartSignalWatch() {
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		for range signalCh {

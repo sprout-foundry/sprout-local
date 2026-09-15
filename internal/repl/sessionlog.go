@@ -1,4 +1,4 @@
-package main
+package repl
 
 // ---------------------------------------------------------------------------
 // Session logging — preserves the bash tool's behavior of writing every
@@ -20,6 +20,14 @@ var (
 	logEnabled bool
 	logPath    string
 )
+
+// EnableSessionLog turns on per-exchange logging to
+// <stateRoot>/sessions/<timestamp>.log. Called by the entrypoint unless
+// -no-log is set.
+func EnableSessionLog() {
+	logPath = defaultLogPath()
+	logEnabled = logPath != ""
+}
 
 // defaultLogPath returns <stateRoot>/sessions/<YYYYMMDDHHMMSS>.log,
 // creating the directory when needed.

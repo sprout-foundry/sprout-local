@@ -1,4 +1,4 @@
-package main
+package repl
 
 // replEvents renders seed agent events as REPL status lines:
 //

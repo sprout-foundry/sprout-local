@@ -1,4 +1,4 @@
-package main
+package repl
 
 // ---------------------------------------------------------------------------
 // Slash-command model management:
