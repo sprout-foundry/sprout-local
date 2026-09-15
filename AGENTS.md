@@ -68,8 +68,9 @@ triggers one forced no-tools answer instead of `ErrMaxIterations`.
 `/model`, `/pull`, `/system`, `/tools` rebuild the agent with
 `ExportState`/`ImportState` carrying the conversation across. Tools off →
 `NoopExecutor`, so the model never sees the tool protocol. `SPROUT_LOCAL_SEED_DEBUG=1`
-enables seed's loop trace. go.mod `replace`s seed to the sibling checkout
-`~/dev/sprout-foundry/seed` (sibling checkout).
+enables seed's loop trace. seed and sinter are ordinary module
+dependencies (resolved via the Go module proxy — no replace directives,
+nothing vendored).
 
 ## Running
 
@@ -166,11 +167,10 @@ Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which
 builds darwin/linux × arm64/amd64 tarballs + `SHA256SUMS` and publishes
 them for `scripts/install.sh` (the one-line curl install).
 
-**`third_party/sinter`** — a local copy of sinter v0.1.1 wired via `replace`
-in go.mod. It carries local patches because upstream v0.1.1/v0.1.2 cannot
-compile on Linux+GGML (undefined `compiledDecode` in `llm/qwen35`; the
-qwen3 closure stub tag excluded linux+amd64). Tracked in
-https://github.com/sprout-foundry/sinter/issues/1.
+**Dependencies** — `github.com/sprout-foundry/sinter` and
+`github.com/sprout-foundry/seed` are plain module requirements resolved
+from the Go module proxy (`go.mod` has no `replace` directives and the
+repo vendors nothing).
 
 ## Design Decisions
 

@@ -1,7 +1,9 @@
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
-github.com/sprout-foundry/seed v1.4.0 h1:3LuLfsCqCtxLHdFISSHz8PlI3AQ0iQ0I7TUt2Kga23o=
-github.com/sprout-foundry/seed v1.4.0/go.mod h1:pmi/FFipp9juUY2LnHwhuejGtwbiQa581u/6wTFIxCU=
+github.com/sprout-foundry/seed v1.4.1 h1:wJI1L30AWfs5O3QAtalS1j+4ZgsdTlRul5vos9tlpt8=
+github.com/sprout-foundry/seed v1.4.1/go.mod h1:pmi/FFipp9juUY2LnHwhuejGtwbiQa581u/6wTFIxCU=
+github.com/sprout-foundry/sinter v0.5.0 h1:BF4U/9Hw3gqlHmOpLVEHQcsNjnXJpVVAP11kVaiADEI=
+github.com/sprout-foundry/sinter v0.5.0/go.mod h1:MSNY95zD82V8zOxXL7LVML0bQbx0oF5ULDUgnPQx714=
 golang.org/x/sys v0.45.0 h1:dO4czNzziLiiXplLQgBCEpCvXQ3dnkn0SdaZSYdQ+FY=
 golang.org/x/sys v0.45.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=

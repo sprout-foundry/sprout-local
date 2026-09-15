@@ -127,6 +127,6 @@ darwin/linux × arm64/amd64 tarballs plus a `SHA256SUMS` manifest and
 publishes them to the GitHub Release, which `scripts/install.sh`
 consumes for the one-line install.
 
-`third_party/sinter` vendors a patched sinter (linux+ggml fix,
-`llm/qwen35/compiled_stub.go`); drop it once upstream releases the fix.
-`seed` resolves to the sibling checkout `../seed` via a go.mod replace.
+Both `sinter` and `seed` are ordinary Go module dependencies, resolved
+from the module proxy by version — no `replace` directives, nothing
+vendored in-tree.
