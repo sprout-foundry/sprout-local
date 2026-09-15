@@ -1,4 +1,4 @@
-package main
+package webui
 
 // ---------------------------------------------------------------------------
 // webui.go — embedded single-binary web chat.
@@ -51,6 +51,7 @@ import (
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
 
+	"github.com/sprout-foundry/sprout-local/internal/apiserver"
 	"github.com/sprout-foundry/sprout-local/internal/chatmodel"
 	"github.com/sprout-foundry/sprout-local/internal/config"
 	"github.com/sprout-foundry/sprout-local/internal/conversations"
@@ -62,6 +63,13 @@ import (
 	"github.com/sprout-foundry/sprout-local/internal/tools"
 	"github.com/sprout-foundry/sprout-local/internal/urlfetch"
 )
+
+// historyLimit caps retained messages per web conversation.
+const historyLimit = 200
+
+// graceFinalQuery is the synthetic user message sent when a turn dies
+// with seed's ErrMaxIterations (same contract as the REPL).
+const graceFinalQuery = "You are out of tool steps. Answer my original question now using what you already retrieved. Do not attempt any further tool calls."
 
 //go:embed all:ui
 var uiFS embed.FS
@@ -152,6 +160,10 @@ func warmPrefixesFor(m *llm.Model, modelDir, systemPrompt string, seedTools []co
 // warmModel loads dir (if needed) and pre-fills the system-prefix KV slot
 // so the first user turn delta-prefills instead of paying the full
 // prefill. Fire-and-forget: errors are logged only.
+func Warm(modelDir, systemPrompt string, wantTools bool, executor core.ToolExecutor) {
+	warmModel(modelDir, systemPrompt, wantTools, executor)
+}
+
 func warmModel(modelDir, systemPrompt string, tools bool, executor core.ToolExecutor) {
 	m, err := chatmodel.LoadModelDir(modelDir)
 	if err != nil {
@@ -247,54 +259,6 @@ func importTranscript(a *core.Agent, msgs []conversations.StoredMsg) error {
 
 // ─── Model discovery ─────────────────────────────────────────────────────
 
-// availableModels lists the MLX model directories under the shared models
-// root (the same root -pull downloads into). Empty when an explicit model
-// dir env (SPROUT_LOCAL_MODEL_DIR or the legacy LOCAL_MODEL_DIR) pins the
-// process to one model.
-func availableModels() []string {
-	if _, pinned := paths.ModelDirEnv(); pinned != "" {
-		return nil // pinned: no listing
-	}
-	root := paths.ModelsRoot()
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() && paths.IsModelDir(filepath.Join(root, e.Name())) {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
-// resolveWebModelDir maps a UI model name to a model directory. Bare names
-// resolve against the shared models root; absolute paths pass through.
-// Empty name → the process default (resolveModelDir).
-func resolveWebModelDir(name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		dir := paths.ResolveModelDir()
-		if dir == "" {
-			return "", fmt.Errorf("no model configured (set SPROUT_LOCAL_MODEL_DIR or -m)")
-		}
-		return dir, nil
-	}
-	if filepath.IsAbs(name) {
-		if paths.IsModelDir(name) {
-			return name, nil
-		}
-		return "", fmt.Errorf("%s is not an MLX-format model directory", name)
-	}
-	cand := filepath.Join(paths.ModelsRoot(), name)
-	if paths.IsModelDir(cand) {
-		return cand, nil
-	}
-	return "", fmt.Errorf("unknown model %q", name)
-}
-
 // ─── WebSocket handling ──────────────────────────────────────────────────
 
 func (c *wsClient) enqueue(v any) {
@@ -385,7 +349,7 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 			// refresh the client's thread is empty; after a mid-chat Stop
 			// the rebuild is idempotent — same completed turns).
 			if conv, err := conversations.LoadConversation(msg.Resume); err == nil {
-				if dir, err := resolveWebModelDir(convModelName(conv)); err == nil {
+				if dir, err := chatmodel.ResolveModelName(convModelName(conv)); err == nil {
 					if aerr := s.ensureAgentFor(c, dir, false, conv); aerr == nil {
 						c.enqueue(map[string]any{"conv": conv.ID, "transcript": agentTranscript(c.agent)})
 					}
@@ -510,7 +474,7 @@ func (s *webServer) loadConversation(c *wsClient, id string) {
 		c.enqueue(map[string]string{"error": "load failed: " + err.Error()})
 		return
 	}
-	dir, err := resolveWebModelDir(convModelName(conv))
+	dir, err := chatmodel.ResolveModelName(convModelName(conv))
 	if err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
@@ -538,11 +502,11 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	if modelName != "" && modelName != c.model {
 		c.model = modelName
 	}
-	if _, err := resolveWebModelDir(c.model); err != nil {
+	if _, err := chatmodel.ResolveModelName(c.model); err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
 	}
-	dir, _ := resolveWebModelDir(c.model)
+	dir, _ := chatmodel.ResolveModelName(c.model)
 
 	// (Re)build the agent when the model or tools flag changed.
 	if err := s.ensureAgent(c, dir, tools); err != nil {
@@ -612,7 +576,7 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	if err != nil {
 		// Interrupted (Stop/refresh): keep the partial the client already
 		// saw, persist what completed, and let the client reconnect.
-		if ctx.Err() != nil || strings.Contains(errString(err), "interrupt") {
+		if ctx.Err() != nil || strings.Contains(err.Error(), "interrupt") {
 			if partial := lastAssistantText(c.agent); partial != "" {
 				c.syncConversation(partial)
 			}
@@ -761,7 +725,7 @@ func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	if dir := paths.ResolveModelDir(); dir != "" {
 		def = filepath.Base(dir)
 	}
-	names := availableModels()
+	names := chatmodel.AvailableModels()
 	if names == nil && def != "" { // pinned to a single model
 		names = []string{def}
 	}
@@ -808,7 +772,7 @@ func (s *webServer) handlePullCatalog(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"catalog":     entries,
 		"suggested":   suggested.Name,
-		"installed":   availableModels(),
+		"installed":   chatmodel.AvailableModels(),
 		"models_root": paths.ModelsRoot(),
 	})
 }
@@ -838,7 +802,7 @@ func uiRoot() fs.FS {
 // A model-less machine is not fatal here: the UI's model picker offers
 // -pull downloads, so we log a warning and serve anyway (the REPL path
 // would instead run the first-run walkthrough).
-func serveHosts(addr string) {
+func Serve(addr string) {
 	mux := http.NewServeMux()
 	s := &webServer{}
 	mux.HandleFunc("/ws", s.serveWS)
@@ -846,7 +810,10 @@ func serveHosts(addr string) {
 	mux.HandleFunc("/pull", s.handlePullCatalog)
 	mux.HandleFunc("/preview/{path...}", handlePreview)
 	mux.Handle("/", http.FileServer(http.FS(uiRoot())))
-	serveAPI(mux)
+	api := apiserver.NewServer()
+	mux.HandleFunc("/v1/chat/completions", api.HandleChatCompletions)
+	mux.HandleFunc("/v1/models", api.HandleModels)
+	mux.HandleFunc("/health", api.HandleHealth)
 
 	// A model-less machine is not fatal under -serve: the UI's model
 	// picker offers -pull downloads, so warn and serve anyway. (The REPL

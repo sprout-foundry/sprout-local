@@ -1,4 +1,4 @@
-package main
+package apiserver
 
 // ---------------------------------------------------------------------------
 // apiserver.go — OpenAI-compatible endpoint for chatllm -serve.
@@ -43,7 +43,7 @@ type apiServer struct {
 	defID string
 }
 
-func newAPIServer() *apiServer {
+func newAPIServer() *apiServer { //nolint:unused // used via NewServer
 	return &apiServer{byID: map[string]*openaisserver.Server{}, defID: filepath.Base(paths.ResolveModelDir())}
 }
 
@@ -61,7 +61,7 @@ func (a *apiServer) serverFor(name string) (*openaisserver.Server, error) {
 	if s, ok := a.byID[name]; ok {
 		return s, nil
 	}
-	dir, err := resolveWebModelDir(name)
+	dir, err := chatmodel.ResolveModelName(name)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (a *apiServer) HandleChatCompletions(w http.ResponseWriter, r *http.Request
 func (a *apiServer) HandleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	def := a.defID
-	names := availableModels()
+	names := chatmodel.AvailableModels()
 	if names == nil {
 		names = []string{def}
 	}
@@ -140,7 +140,7 @@ func (a *apiServer) HandleModels(w http.ResponseWriter, r *http.Request) {
 		// ContextLength only for already-resident models: listing must not
 		// trigger a multi-second model load just to fill one field.
 		ctxLen := 0
-		if dir, err := resolveWebModelDir(n); err == nil && chatmodel.IsModelLoaded(dir) {
+		if dir, err := chatmodel.ResolveModelName(n); err == nil && chatmodel.IsModelLoaded(dir) {
 			if m, err := chatmodel.LoadModelDir(dir); err == nil {
 				ctxLen = m.ContextLength()
 			}
@@ -156,10 +156,5 @@ func (a *apiServer) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "model": a.defID})
 }
 
-// serveAPI mounts the OpenAI-compatible API on the -serve mux.
-func serveAPI(mux *http.ServeMux) {
-	a := newAPIServer()
-	mux.HandleFunc("/v1/chat/completions", a.HandleChatCompletions)
-	mux.HandleFunc("/v1/models", a.HandleModels)
-	mux.HandleFunc("/health", a.HandleHealth)
-}
+// NewServer builds the API server over the default model dir.
+func NewServer() *apiServer { return newAPIServer() }

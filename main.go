@@ -34,6 +34,7 @@ import (
 	"github.com/sprout-foundry/sprout-local/internal/paths"
 	"github.com/sprout-foundry/sprout-local/internal/provider"
 	"github.com/sprout-foundry/sprout-local/internal/tools"
+	"github.com/sprout-foundry/sprout-local/internal/webui"
 )
 
 // Session defaults.
@@ -157,7 +158,7 @@ func main() {
 		}
 		dir := paths.ResolveModelDir()
 		if dir != "" {
-			go warmModel(dir, config.EffectiveSystemPrompt(*flagSystem), config.ToolsRequested, executor)
+			go webui.Warm(dir, config.EffectiveSystemPrompt(*flagSystem), config.ToolsRequested, executor)
 		}
 	}
 
@@ -190,7 +191,7 @@ func main() {
 	// -serve: host the embedded web UI + WebSocket API. Session logging is
 	// REPL-only, so this path never touches the session log.
 	if *flagServe {
-		serveHosts(*flagAddr)
+		webui.Serve(*flagAddr)
 		return
 	}
 

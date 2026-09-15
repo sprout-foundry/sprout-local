@@ -1,4 +1,4 @@
-package main
+package webui
 
 // ---------------------------------------------------------------------------
 // factcheck.go — post-answer self-check for the web UI.
