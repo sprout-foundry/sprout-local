@@ -17,39 +17,39 @@ runtime dependencies).
 
 ## Architecture
 
-Single Go binary. seed owns the conversation loop and tool iteration;
+Standard Go layout: thin `cmd/sprout-local` entrypoint over `internal/`
+packages. seed owns the conversation loop and tool iteration;
 sinter (Go-native engine, Apple Silicon via MLX; Linux GPUs via GGML)
 runs inference in-process against an MLX-format model directory. Tool
 calling is the qwen3.5 text protocol (the model's own `chat_template.jinja`
 format) rendered/parsed by the seed provider adapter — sinter's API has no
 structured tools.
 
-### File Layout
+### Package Layout
 
-| File | Purpose |
-|------|---------|
-| `main.go` | Entry point, CLI flags, REPL loop, slash commands, `replState` (agent lifecycle), stream filter |
-| `seedprovider.go` | sinter as a seed `core.Provider`: render seed messages → qwen tool protocol, parse `<tool_call>` text back into structured calls |
-| `seedexecutor.go` | the tool registry as a seed `core.ToolExecutor` (run_command y/N gate via seed UI) |
-| `replevents.go` | seed events → REPL status lines (`tool →` / `← result:`) |
-| `tools.go` | helper tool registry (read_file, write_file, edit_file, list_dir, file_info, run_command, web_fetch), path sandbox, qwen tool-prompt/parse helpers, `/tools` command |
-| `runtime.go` | session tunables (max-steps/tokens/result-cap/timeout via env+flags), machine-context system prompt, persisted /tools state |
-| `skills.go` | user skills: JSON-defined fixed-command tools in `~/.sprout-local/skills/*.json`, loaded by `/tools` |
-| `apiserver.go` | `-serve` OpenAI-compatible API: `/v1/chat/completions` (stream + tool_calls) routed to any installed model, `/v1/models`, `/health` |
-| `modelcmd.go` | `/model`, `/models`, `/pull` slash commands: model switching, listing, cache eviction |
-| `webui.go` | `-serve`: embedded web UI (go:embed), WebSocket chat on a per-connection seed agent (tools, status/metrics frames), conversation persistence |
-| `ui/index.html` | Web chat UI — static, dependency-free, embedded at build time |
-| `chatmodel.go` | sinter inference: model load/cache, streaming generation, output hygiene |
-| `chatmodel_darwin.go` | Per-platform sinter arch registration — Apple Silicon/MLX (all archs) |
-| `chatmodel_linux_ggml.go` | Per-platform sinter arch registration — Linux/GGML (qwen2 + qwen35 only) |
-| `backend.go` | Startup model probe (fails fast when no model dir resolves) |
-| `signalwatch.go` | Ctrl-C: first signal cancels the in-flight generation, second exits |
-| `sessionlog.go` | Session logs to `~/.sprout-local/sessions/<timestamp>.log` |
-| `download.go` | `-pull`: HF download via `hf` CLI, sinter catalog metadata, RAM gate |
-| `urlfetch.go` | Web `#url` enrichment: fetch + readable-text extraction for prompts |
-| `factcheck.go` | Post-answer Yes/No self-check using the loaded model (web UI) |
-| `mdterm.go` | Streaming markdown→ANSI renderer for REPL/one-shot output |
-| `sysinfo_*.go` | Build-tagged total RAM detection (darwin/linux/other) |
+Standard Go layout: `cmd/sprout-local` is a thin entrypoint (flags, env
+setup, dispatch); all behavior lives in `internal/` packages.
+
+| Package | Purpose |
+|---------|---------|
+| `cmd/sprout-local` | Entry point: CLI flags, tunables, log filter, skills load, `-pull`, then dispatch to repl/webui |
+| `internal/repl` | REPL loop, slash commands, one-shot/transcript-pipe modes, `replState` (agent lifecycle), termUI, replevents, session log, Ctrl-C watch, first-run walkthrough, `/model`-`/models`-`/pull` commands |
+| `internal/provider` | sinter as a seed `core.Provider`: render seed messages → qwen tool protocol, parse `<tool_call>` text back into structured calls; streaming display filter (toolStreamFilter) |
+| `internal/tools` | helper tool registry (read_file, write_file, edit_file, list_dir, file_info, run_command, web_fetch), path sandbox, qwen/minicpm5 tool-prompt/parse, skills, seed `core.ToolExecutor` (run_command y/N gate) |
+| `internal/config` | session tunables (max-steps/tokens/result-cap/timeout via env+flags), machine-context system prompt, persisted /tools state |
+| `internal/chatmodel` | sinter inference: model resolution/listing, load cache (LRU, single-GPU serialization), streaming generation, repetition guard, output hygiene, model backend probe, engine log filter |
+| `internal/webui` | `-serve`: embedded web UI (go:embed `ui/`), WebSocket chat on per-connection seed agents, conversation persistence, factcheck |
+| `internal/apiserver` | `-serve` OpenAI-compatible API handlers: `/v1/chat/completions` (stream + tool_calls), `/v1/models`, `/health` |
+| `internal/conversations` | conversation persistence (save/load/list/delete, titles) |
+| `internal/download` | `-pull`: HF download via `hf` CLI, sinter catalog metadata, RAM gate |
+| `internal/mdterm` | streaming markdown→ANSI renderer for REPL/one-shot output |
+| `internal/urlfetch` | web `#url` enrichment: fetch + readable-text extraction |
+| `internal/paths` | state-root path helpers: home, models root, sessions, skills, model-dir detection (build-tag free) |
+| `internal/sysinfo` | build-tagged total RAM detection (darwin/linux/other) |
+
+Dependency direction (acyclic): `cmd` → repl/webui → provider/tools →
+chatmodel → {config, paths, sysinfo}; download/conversations/mdterm/
+urlfetch are leaves.
 
 ### Skills
 

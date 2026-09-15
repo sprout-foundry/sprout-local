@@ -103,12 +103,15 @@ skill is the consent.
 
 ## Architecture
 
-Single Go binary. seed owns the conversation loop (compaction,
+One Go binary built from a standard layout: `cmd/sprout-local` (thin
+entrypoint) over `internal/` packages (`repl`, `webui`, `apiserver`,
+`provider`, `tools`, `chatmodel`, `config`, `download`, …).
+seed owns the conversation loop (compaction,
 interrupts, state export); sinter runs inference in-process. Tool
 calling uses qwen3.5's native text protocol — declarations in a
 `# Tools` system block, calls as `<tool_call>` markup, results as
 `<tool_response>` — rendered and parsed by the seed provider adapter,
-since sinter's API has no structured tools. A single `runGeneration`
+since sinter's API has no structured tools. A single `RunGeneration`
 core serves every surface: generation config, metrics, a leak/repetition
 guard, and output hygiene.
 

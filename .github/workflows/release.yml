@@ -107,7 +107,7 @@ jobs:
             fi
           fi
           env $SDKFIX go build $TAGS -trimpath -ldflags "-s -w" \
-            -o "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}" .
+            -o "sprout-local-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/sprout-local
 
       - name: Smoke test (binary runs on this machine)
         if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'

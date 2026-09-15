@@ -33,7 +33,7 @@ GO := CGO_ENABLED=1 go
 all: build
 
 build:
-	$(GO) build $(GO_TAGS) -o $(BINARY) .
+	$(GO) build $(GO_TAGS) -o $(BINARY) ./cmd/sprout-local
 
 install: build
 	mkdir -p $(dir $(INSTALL))
