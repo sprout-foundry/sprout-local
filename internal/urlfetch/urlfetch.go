@@ -1,4 +1,4 @@
-package main
+package urlfetch
 
 // ---------------------------------------------------------------------------
 // urlfetch.go — #url prompt enrichment for the web UI.
@@ -31,9 +31,9 @@ var (
 	maxTextChars        = 8000    // readable text kept per URL
 )
 
-// extractPromptURLs returns deduplicated #URLs from the prompt, skipping
+// ExtractPromptURLs returns deduplicated #URLs from the prompt, skipping
 // anything inside ``` fenced or ` inline ` code blocks.
-func extractPromptURLs(prompt string) []string {
+func ExtractPromptURLs(prompt string) []string {
 	cleaned := reFencedCode.ReplaceAllString(prompt, " ")
 	cleaned = reInlineCode.ReplaceAllString(cleaned, " ")
 	matches := rePromptURL.FindAllStringSubmatch(cleaned, -1)
@@ -49,10 +49,10 @@ func extractPromptURLs(prompt string) []string {
 	return urls
 }
 
-// fetchReadable downloads a URL and returns its readable text. Network
+// FetchReadable downloads a URL and returns its readable text. Network
 // failures degrade gracefully: the caller notes the failure and chats on
 // without the page.
-func fetchReadable(ctx context.Context, rawURL string) (string, error) {
+func FetchReadable(ctx context.Context, rawURL string) (string, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 

@@ -27,6 +27,9 @@ import (
 
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/sinter/llm"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 )
 
 // contextWindow is qwen3.5-4b's max_position_embeddings. The template has
@@ -41,8 +44,8 @@ const contextWindow = 262144
 type sinterProvider struct {
 	modelDir    string
 	display     func(string)
-	displayMode mdMode // styled (terminal) or raw (web socket)
-	chatCount   int    // generations this turn (iteration boundary detection)
+	displayMode mdterm.Mode // styled (terminal) or raw (web socket)
+	chatCount   int         // generations this turn (iteration boundary detection)
 	// protocolName caches the model's tool protocol ("qwen" or "minicpm5").
 	protocolName string
 	// onIterationBoundary, when set, is called before each generation
@@ -68,10 +71,10 @@ func (p *sinterProvider) protocol() string {
 // SetDisplay wires (or clears, nil) the terminal delta sink.
 func (p *sinterProvider) SetDisplay(fn func(string)) { p.display = fn }
 
-// SetDisplayMode picks the rendering for the display sink: mdStyled for
-// terminals (markdown → ANSI), mdRaw for consumers that take plain text
-// (the web socket — ANSI codes are meaningless there).
-func (p *sinterProvider) SetDisplayMode(mode mdMode) { p.displayMode = mode }
+// SetDisplayMode picks the rendering for the display sink: mdterm.Styled
+// for terminals (markdown → ANSI), mdterm.Raw for consumers that take
+// plain text (the web socket — ANSI codes are meaningless there).
+func (p *sinterProvider) SetDisplayMode(mode mdterm.Mode) { p.displayMode = mode }
 
 // ResetTurnCount clears the per-turn generation counter; surfaces call it
 // at user-turn start so the iteration boundary only fires for generations
@@ -87,7 +90,7 @@ func (p *sinterProvider) Info() core.ProviderInfo {
 	return core.ProviderInfo{
 		Model:           p.modelDir,
 		ContextSize:     contextWindow,
-		MaxOutputTokens: maxTokens,
+		MaxOutputTokens: config.MaxTokens,
 	}
 }
 
@@ -140,7 +143,7 @@ func (p *sinterProvider) chat(ctx context.Context, req *core.ChatRequest, handle
 		msgs = appendToolPromptFor(msgs, req.Tools, p.protocol())
 	}
 
-	var display *streamPrinter
+	var display *mdterm.StreamPrinter
 	if p.display != nil {
 		display = newStreamPrinterFunc(p.display, p.displayMode)
 	}
@@ -192,10 +195,10 @@ func (p *sinterProvider) chat(ctx context.Context, req *core.ChatRequest, handle
 	return resp, nil
 }
 
-// newStreamPrinterFunc builds a display-only streamPrinter that forwards
+// newStreamPrinterFunc builds a display-only StreamPrinter that forwards
 // rendered output to fn (the terminal sink without owning stdout).
-func newStreamPrinterFunc(fn func(string), mode mdMode) *streamPrinter {
-	return newStreamPrinter(&funcWriter{fn}, mode)
+func newStreamPrinterFunc(fn func(string), mode mdterm.Mode) *mdterm.StreamPrinter {
+	return mdterm.NewStreamPrinter(&funcWriter{fn}, mode)
 }
 
 // funcWriter adapts a func(string) to io.Writer.
@@ -373,7 +376,7 @@ func toolParamsFromSeed(schema interface{}) ([]toolParam, bool) {
 
 // toolDisplayHandler streams clean content to the terminal.
 type toolDisplayHandler struct {
-	printer *streamPrinter
+	printer *mdterm.StreamPrinter
 }
 
 func (h *toolDisplayHandler) OnContent(content string) {
@@ -387,7 +390,7 @@ func (h *toolDisplayHandler) OnDone(*core.ChatResponse) {}
 func (h *toolDisplayHandler) OnError(err error) {
 	if err != nil {
 		fmt.Println()
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 	}
 }
 

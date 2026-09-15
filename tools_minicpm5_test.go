@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // TestMiniCPM5ProtocolDetection pins model-dir → protocol resolution.
@@ -108,7 +111,7 @@ func TestQwenParseUnaffectedByMiniCPM5(t *testing.T) {
 func TestToolStreamFilterMiniCPM5(t *testing.T) {
 	f := &toolStreamFilter{tools: true, protocol: "minicpm5"}
 	var out strings.Builder
-	f.printer = newStreamPrinter(&out, mdRaw)
+	f.printer = mdterm.NewStreamPrinter(&out, mdterm.Raw)
 	f.write("prose ")
 	f.write(`<function name="read_file"><param name="path">/tmp/x</param>`)
 	f.write(`</function>`)
@@ -125,5 +128,5 @@ func TestToolStreamFilterMiniCPM5(t *testing.T) {
 
 // homeModelDir resolves a directory under the shared models root for tests.
 func homeModelDir(name string) string {
-	return filepath.Join(modelsRoot(), name)
+	return filepath.Join(paths.ModelsRoot(), name)
 }

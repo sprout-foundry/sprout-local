@@ -1,8 +1,7 @@
-package main
+package config
 
 // ---------------------------------------------------------------------------
-// runtime.go — session tunables, machine context, and persisted /tools
-// state.
+// config — session tunables, machine context, and persisted /tools state.
 //
 // The limits that used to be hardcoded (tool round-trips per turn,
 // tool-result size, command timeout, generation token cap) are plain vars
@@ -23,41 +22,59 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // ─── Session tunables ────────────────────────────────────────────────────
 //
-// Defaults live in tools.go (defaultMaxToolSteps etc.); these vars hold
-// the session values. SPROUT_LOCAL_* environment variables override the
-// defaults at startup, and flags (-max-steps, -max-tokens) override the
-// environment:
+// Defaults below; these vars hold the session values. SPROUT_LOCAL_*
+// environment variables override the defaults at startup (InitTunables),
+// and flags (-max-steps, -max-tokens) override the environment:
 //
 //	SPROUT_LOCAL_MAX_STEPS        tool round-trips per user turn
 //	SPROUT_LOCAL_TOOL_RESULT_CAP  per-result character cap
 //	SPROUT_LOCAL_COMMAND_TIMEOUT  run_command timeout in seconds
 //	SPROUT_LOCAL_MAX_TOKENS       generation token cap
 
-var (
-	maxToolSteps   = defaultMaxToolSteps
-	toolResultCap  = defaultToolResultCap
-	commandTimeout = defaultCommandTimeout * time.Second
-	maxTokens      = defaultMaxTokens
+const (
+	// defaultMaxToolSteps caps tool round-trips per user turn, so a model
+	// that keeps calling tools can't loop forever (or burn the token
+	// budget). Default raised from 4: with self-correcting errors, a
+	// lookup usually needs 1–2 steps and a broken first guess shouldn't
+	// kill the turn. 100 = effectively "until the model stops on its
+	// own"; the graceful-exhaustion path still bounds a runaway.
+	defaultMaxToolSteps = 100
+	// defaultToolResultCap bounds each tool result fed back to the model.
+	defaultToolResultCap = 6000 // characters
+	// defaultCommandTimeout bounds run_command executions, in seconds.
+	defaultCommandTimeout = 30
+	// defaultMaxTokens is the session generation token cap. Higher
+	// temperature/variety settings live with the engine (chatmodel).
+	defaultMaxTokens = 4096
 )
 
-// toolsRequested is the session switch for tool calling (see /tools and
+var (
+	MaxToolSteps   = defaultMaxToolSteps
+	ToolResultCap  = defaultToolResultCap
+	CommandTimeout = defaultCommandTimeout * time.Second
+	MaxTokens      = defaultMaxTokens
+)
+
+// ToolsRequested is the session switch for tool calling (see /tools and
 // -tools). On by default; the choice persists in tools.json.
-var toolsRequested = true
+var ToolsRequested = true
 
-// toolSafetyBypass skips the run_command confirmation prompt (yolo).
-var toolSafetyBypass = false
+// ToolSafetyBypass skips the run_command confirmation prompt (yolo).
+var ToolSafetyBypass = false
 
-// initTunables applies SPROUT_LOCAL_* overrides. Unknown values are
+// InitTunables applies SPROUT_LOCAL_* overrides. Unknown values are
 // reported and ignored — a typo should not silently halve the budget.
-func initTunables() {
-	setPositiveInt("SPROUT_LOCAL_MAX_STEPS", func(n int) { maxToolSteps = n })
-	setPositiveInt("SPROUT_LOCAL_TOOL_RESULT_CAP", func(n int) { toolResultCap = n })
-	setPositiveSeconds("SPROUT_LOCAL_COMMAND_TIMEOUT", func(d time.Duration) { commandTimeout = d })
-	setPositiveInt("SPROUT_LOCAL_MAX_TOKENS", func(n int) { maxTokens = n })
+func InitTunables() {
+	setPositiveInt("SPROUT_LOCAL_MAX_STEPS", func(n int) { MaxToolSteps = n })
+	setPositiveInt("SPROUT_LOCAL_TOOL_RESULT_CAP", func(n int) { ToolResultCap = n })
+	setPositiveSeconds("SPROUT_LOCAL_COMMAND_TIMEOUT", func(d time.Duration) { CommandTimeout = d })
+	setPositiveInt("SPROUT_LOCAL_MAX_TOKENS", func(n int) { MaxTokens = n })
 }
 
 // setPositiveInt parses key as a positive integer and calls set with it.
@@ -90,11 +107,11 @@ func setPositiveSeconds(key string, set func(time.Duration)) {
 
 // ─── Machine context for the model ───────────────────────────────────────
 
-// environmentContext describes the machine: OS, architecture, shell, and
+// EnvironmentContext describes the machine: OS, architecture, shell, and
 // working directory, plus a platform hint or two. Without it, small
 // models guess the platform (ip addr on macOS) and burn tool budget
 // discovering their mistakes.
-func environmentContext() string {
+func EnvironmentContext() string {
 	osName := runtime.GOOS
 	hints := ""
 	switch runtime.GOOS {
@@ -109,14 +126,18 @@ func environmentContext() string {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = "."
+	}
 	return fmt.Sprintf("Environment: %s (%s/%s), shell %s, working directory %s. %s",
-		osName, runtime.GOOS, runtime.GOARCH, shell, cwd(), hints)
+		osName, runtime.GOOS, runtime.GOARCH, shell, wd, hints)
 }
 
-// effectiveSystemPrompt combines the user's -s / /system prompt with the
+// EffectiveSystemPrompt combines the user's -s / /system prompt with the
 // machine context; the environment note alone when no user prompt is set.
-func effectiveSystemPrompt(user string) string {
-	env := environmentContext()
+func EffectiveSystemPrompt(user string) string {
+	env := EnvironmentContext()
 	if strings.TrimSpace(user) == "" {
 		return env
 	}
@@ -125,25 +146,27 @@ func effectiveSystemPrompt(user string) string {
 
 // ─── Persisted /tools state ──────────────────────────────────────────────
 
-// toolsPreference is the on-disk shape of <stateRoot>/tools.json.
-type toolsPreference struct {
+// ToolsPreference is the on-disk shape of <stateRoot>/tools.json.
+type ToolsPreference struct {
 	Tools string `json:"tools"` // "on", "off", or "yolo"
 }
 
-func toolsPreferencePath() string {
-	root := stateRoot()
+// ToolsPreferencePath is the persisted /tools state location
+// (<stateRoot>/tools.json). "" when the state root is unresolvable.
+func ToolsPreferencePath() string {
+	root := paths.StateRoot()
 	if root == "" {
 		return ""
 	}
 	return filepath.Join(root, "tools.json")
 }
 
-// loadToolsPreference applies the persisted /tools choice, defaulting to
+// LoadToolsPreference applies the persisted /tools choice, defaulting to
 // tools on. Called at startup when -tools is not given.
-func loadToolsPreference() {
-	toolsRequested = true
-	toolSafetyBypass = false
-	p := toolsPreferencePath()
+func LoadToolsPreference() {
+	ToolsRequested = true
+	ToolSafetyBypass = false
+	p := ToolsPreferencePath()
 	if p == "" {
 		return
 	}
@@ -151,35 +174,35 @@ func loadToolsPreference() {
 	if err != nil {
 		return
 	}
-	var pref toolsPreference
+	var pref ToolsPreference
 	if json.Unmarshal(b, &pref) != nil {
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(pref.Tools)) {
 	case "off":
-		toolsRequested = false
+		ToolsRequested = false
 	case "yolo":
-		toolsRequested = true
-		toolSafetyBypass = true
+		ToolsRequested = true
+		ToolSafetyBypass = true
 	default: // "on" or unknown → on
-		toolsRequested = true
+		ToolsRequested = true
 	}
 }
 
-// saveToolsPreference persists the current /tools state for next launch.
-func saveToolsPreference() {
-	p := toolsPreferencePath()
+// SaveToolsPreference persists the current /tools state for next launch.
+func SaveToolsPreference() {
+	p := ToolsPreferencePath()
 	if p == "" {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return
 	}
-	pref := toolsPreference{Tools: "on"}
+	pref := ToolsPreference{Tools: "on"}
 	switch {
-	case !toolsRequested:
+	case !ToolsRequested:
 		pref.Tools = "off"
-	case toolSafetyBypass:
+	case ToolSafetyBypass:
 		pref.Tools = "yolo"
 	}
 	b, err := json.MarshalIndent(pref, "", "  ")

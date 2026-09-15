@@ -31,6 +31,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // skill is a user-defined no-parameter tool backed by a fixed command.
@@ -41,28 +44,6 @@ type skill struct {
 	Args        []string `json:"args"`
 }
 
-// skillsDir is the skills directory: SPROUT_LOCAL_SKILLS_DIR, else
-// <stateRoot>/skills (default ~/.sprout-local/skills). Legacy compat:
-// when the new directory does not exist but the pre-migration
-// ~/.chatllm/skills does, the legacy directory is used.
-func skillsDir() string {
-	if dir := os.Getenv("SPROUT_LOCAL_SKILLS_DIR"); dir != "" {
-		return dir
-	}
-	state := stateRoot()
-	if state == "" {
-		return ""
-	}
-	newDir := filepath.Join(state, "skills")
-	if dirExists(newDir) {
-		return newDir
-	}
-	if legacy := filepath.Join(homeDir(), ".chatllm", "skills"); dirExists(legacy) {
-		return legacy
-	}
-	return newDir
-}
-
 // skillRegistry holds the loaded skills (nil before first load).
 var skillRegistry []skill
 
@@ -70,7 +51,7 @@ var skillRegistry []skill
 // count and an error list (bad files are skipped, not fatal).
 func reloadSkills() (int, []error) {
 	skillRegistry = nil
-	dir := skillsDir()
+	dir := paths.SkillsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, nil // no skill dir: zero skills, not an error
@@ -152,14 +133,14 @@ func runSkillCommand(ctx context.Context, s skill) (string, error) {
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, config.CommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.Command, s.Args...)
 	cmd.Dir = cwd()
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimRight(string(out), "\n")
-	if len(text) > toolResultCap {
-		text = text[:toolResultCap] + "\n…[truncated]"
+	if len(text) > config.ToolResultCap {
+		text = text[:config.ToolResultCap] + "\n…[truncated]"
 	}
 	if err != nil {
 		if text == "" {

@@ -23,6 +23,10 @@ import (
 
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
+
+	"github.com/sprout-foundry/sprout-local/internal/download"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // currentModelDir returns the active model directory, falling back to the
@@ -44,12 +48,12 @@ func handleModelCommand(ref string, active *string) {
 	}
 	dir, err := modelFromRef(ref)
 	if err != nil {
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
 	fmt.Printf("Loading %s …\n", filepath.Base(dir))
 	if _, err := loadModelDir(dir); err != nil {
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
 	evictModels(residentLimit(), dir)
@@ -64,23 +68,23 @@ func handleModelCommand(ref string, active *string) {
 // the model actually runs before the user commits to a turn.
 func handlePullCommand(name string, active *string) {
 	if name == "" {
-		printPullList()
+		download.PrintPullList()
 		return
 	}
-	m, err := findCatalogModel(name)
+	m, err := download.FindCatalogModel(name)
 	if err != nil {
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
-	dest, err := downloadModel(ctxBg(), m)
+	dest, err := download.DownloadModel(ctxBg(), m)
 	if err != nil {
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
 	fmt.Printf("Pulled %s → %s\n", m.Name, dest)
 
 	if _, err := loadModelDir(dest); err != nil {
-		fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		return
 	}
 	evictModels(residentLimit(), dest)
@@ -88,10 +92,10 @@ func handlePullCommand(name string, active *string) {
 	setSessionModelProtocol(dest)
 	fmt.Printf("Switched to %s.\n", filepath.Base(dest))
 
-	printer := stdoutPrinter()
+	printer := mdterm.StdoutPrinter()
 	_, _ = streamChatModel(ctxBg(), dest, []llm.ChatMessage{
 		{Role: "user", Content: "Introduce yourself in one short sentence."},
-	}, printer.writeDelta)
+	}, printer.WriteDelta)
 	printer.Close()
 	fmt.Println()
 }
@@ -105,16 +109,16 @@ func modelFromRef(ref string) (string, error) {
 		return "", fmt.Errorf("no model specified")
 	}
 	if ref == "~" || strings.HasPrefix(ref, "~/") {
-		ref = filepath.Join(homeDir(), strings.TrimPrefix(strings.TrimPrefix(ref, "~"), "/"))
+		ref = filepath.Join(paths.HomeDir(), strings.TrimPrefix(strings.TrimPrefix(ref, "~"), "/"))
 	}
 	if filepath.IsAbs(ref) {
-		if isModelDir(ref) {
+		if paths.IsModelDir(ref) {
 			return ref, nil
 		}
 		return "", fmt.Errorf("%s is not an MLX-format model directory (need config.json + tokenizer.json + *.safetensors)", ref)
 	}
-	cand := filepath.Join(modelsRoot(), ref)
-	if isModelDir(cand) {
+	cand := filepath.Join(paths.ModelsRoot(), ref)
+	if paths.IsModelDir(cand) {
 		return cand, nil
 	}
 	for _, m := range catalog.ModelCatalog {
@@ -130,11 +134,11 @@ func modelFromRef(ref string) (string, error) {
 // (e.g. SPROUT_LOCAL_MODEL_DIR pointing outside the root). Sorted; the
 // active default is prepended so it can be listed first.
 func availableModelNames() (names []string, def string) {
-	root := modelsRoot()
+	root := paths.ModelsRoot()
 	entries, err := os.ReadDir(root)
 	if err == nil {
 		for _, e := range entries {
-			if e.IsDir() && isModelDir(filepath.Join(root, e.Name())) {
+			if e.IsDir() && paths.IsModelDir(filepath.Join(root, e.Name())) {
 				names = append(names, e.Name())
 			}
 		}

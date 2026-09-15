@@ -27,6 +27,10 @@ import (
 	"strings"
 
 	"github.com/sprout-foundry/sinter/llm/catalog"
+
+	"github.com/sprout-foundry/sprout-local/internal/download"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
 )
 
 // firstRunPrompt is the prompt shown above the input line.
@@ -43,8 +47,8 @@ const firstRunAttempts = 3
 // the returned true before any exit, "later/skip" exits 0, and EOF or
 // exhausting the attempt budget exits 1.
 func runFirstRun(ctx context.Context, r *bufio.Reader) bool {
-	root := modelsRoot()
-	ram := totalSystemRAM()
+	root := paths.ModelsRoot()
+	ram := sysinfo.TotalSystemRAM()
 	suggested := catalog.SuggestedForRAM(ram)
 
 	fmt.Println("No models found in " + root + ".")
@@ -75,7 +79,7 @@ func runFirstRun(ctx context.Context, r *bufio.Reader) bool {
 			continue // re-prompt (counts against the attempt budget)
 		}
 
-		dest, derr := downloadModel(ctx, m)
+		dest, derr := download.DownloadModel(ctx, m)
 		if derr != nil {
 			// A RAM-gate refusal (or an equally unsalvageable refusal)
 			// re-prompts; anything that isn't a gate refusal is terminal.
@@ -131,7 +135,7 @@ func resolveFirstRunChoice(line string, entries []catalog.CatalogModel) (catalog
 		}
 		return entries[n-1], nil
 	}
-	m, err := findCatalogModel(line)
+	m, err := download.FindCatalogModel(line)
 	if err != nil {
 		return catalog.CatalogModel{}, fmt.Errorf("%v", err)
 	}

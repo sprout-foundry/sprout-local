@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sprout-foundry/sinter/llm"
+	"github.com/sprout-foundry/sprout-local/internal/download"
 )
 
 // makeFakeModelDir creates a directory that passes isModelDir (config.json
@@ -58,7 +59,7 @@ func TestModelFromRef(t *testing.T) {
 		t.Error("empty ref should error")
 	}
 	// Catalog name whose Dir is not installed: error suggests /pull.
-	m, err := findCatalogModel("gemma4-e2b")
+	m, err := download.FindCatalogModel("gemma4-e2b")
 	if err != nil {
 		t.Skip("gemma4-e2b not in catalog")
 	}

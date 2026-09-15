@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"strings"
 	"testing"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
 )
 
 func TestSplitCommand(t *testing.T) {
@@ -58,15 +60,15 @@ func TestDispatchCommand(t *testing.T) {
 	}
 
 	// /tools toggles and rebuilds the executor
-	toolsRequested = false
+	config.ToolsRequested = false
 	if dispatchCommand("tools", "on", st) {
 		t.Error("/tools must not signal exit")
 	}
-	if !toolsRequested {
+	if !config.ToolsRequested {
 		t.Error("/tools on did not set the flag")
 	}
 	dispatchCommand("tools", "off", st)
-	if toolsRequested {
+	if config.ToolsRequested {
 		t.Error("/tools off did not clear the flag")
 	}
 }

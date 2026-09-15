@@ -29,25 +29,16 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/urlfetch"
 )
 
-// Session-tunable defaults. initTunables (runtime.go) applies
-// SPROUT_LOCAL_MAX_STEPS, SPROUT_LOCAL_TOOL_RESULT_CAP,
-// SPROUT_LOCAL_COMMAND_TIMEOUT and SPROUT_LOCAL_MAX_TOKENS; the -max-steps
-// and -max-tokens flags override the environment.
-const (
-	// defaultMaxToolSteps caps tool round-trips per user turn, so a model
-	// that keeps calling tools can't loop forever (or burn the token
-	// budget). Default raised from 4: with self-correcting errors, a
-	// lookup usually needs 1–2 steps and a broken first guess shouldn't
-	// kill the turn. 100 = effectively "until the model stops on its
-	// own"; the graceful-exhaustion path still bounds a runaway.
-	defaultMaxToolSteps = 100
-	// defaultToolResultCap bounds each tool result fed back to the model.
-	defaultToolResultCap = 6000 // characters
-	// defaultCommandTimeout bounds run_command executions, in seconds.
-	defaultCommandTimeout = 30
-)
+// The session-tunable limits (tool round-trips, result cap, command
+// timeout, token cap) live in the config package, where their defaults
+// are declared; -max-steps / -max-tokens flags and SPROUT_LOCAL_* env
+// vars override them (see config.InitTunables and main.go).
 
 // toolSpec describes one tool: declaration fields (name, description,
 // parameters) plus the native Go implementation.
@@ -662,10 +653,10 @@ func cwd() string {
 
 // truncateToolResult caps a tool result at toolResultCap characters.
 func truncateToolResult(s string) string {
-	if len(s) <= toolResultCap {
+	if len(s) <= config.ToolResultCap {
 		return s
 	}
-	return s[:toolResultCap] + "\n…[truncated]"
+	return s[:config.ToolResultCap] + "\n…[truncated]"
 }
 
 // truncateResultForDisplay shortens a tool result for the one-line REPL
@@ -708,11 +699,11 @@ func toolResultMessage(name, result string) llm.ChatMessage {
 func handleToolsCommand(args string) {
 	n, errs := reloadSkills()
 	for _, err := range errs {
-		fmt.Printf("%s skill: %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s skill: %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 	}
 	switch strings.ToLower(strings.TrimSpace(args)) {
 	case "", "show":
-		if !toolsRequested {
+		if !config.ToolsRequested {
 			fmt.Printf("Tools are off. /tools on enables: %s\n", toolNames())
 			if n > 0 {
 				fmt.Printf("Installed skill%s: %s\n", plural(n), skillNames())
@@ -720,7 +711,7 @@ func handleToolsCommand(args string) {
 			return
 		}
 		status := "run_command asks before running"
-		if toolSafetyBypass {
+		if config.ToolSafetyBypass {
 			status = "run_command does not ask (yolo)"
 		}
 		fmt.Printf("Tools are on; %s.\nTools: %s\n", status, toolNames())
@@ -728,19 +719,19 @@ func handleToolsCommand(args string) {
 			fmt.Printf("Skills: %s\n", skillNames())
 		}
 	case "on", "off":
-		toolsRequested = args == "on"
-		toolSafetyBypass = false
-		if toolsRequested {
+		config.ToolsRequested = args == "on"
+		config.ToolSafetyBypass = false
+		if config.ToolsRequested {
 			fmt.Printf("Tools are on; run_command asks before running.\nTools: %s\n", toolNames())
 		} else {
 			fmt.Println("Tools are off.")
 		}
-		if toolsRequested && n > 0 {
+		if config.ToolsRequested && n > 0 {
 			fmt.Printf("Skills: %s\n", skillNames())
 		}
 	case "yolo":
-		toolsRequested = true
-		toolSafetyBypass = true
+		config.ToolsRequested = true
+		config.ToolSafetyBypass = true
 		fmt.Printf("Tools are on; run_command does not ask (yolo).\nTools: %s\n", toolNames())
 		if n > 0 {
 			fmt.Printf("Skills: %s\n", skillNames())
@@ -749,7 +740,7 @@ func handleToolsCommand(args string) {
 		fmt.Println("usage: /tools [on|off|yolo]")
 		return
 	}
-	saveToolsPreference()
+	config.SaveToolsPreference()
 }
 
 // toolNames lists registry names for status lines.
@@ -790,8 +781,8 @@ func toolRunReadFile(ctx context.Context, args map[string]string) (string, error
 		return "", err
 	}
 	s := string(b)
-	if len(s) > toolResultCap {
-		s = s[:toolResultCap] + "\n…[truncated]"
+	if len(s) > config.ToolResultCap {
+		s = s[:config.ToolResultCap] + "\n…[truncated]"
 	}
 	if s == "" {
 		return "(empty file)", nil
@@ -985,11 +976,11 @@ func toolRunCommand(ctx context.Context, args map[string]string) (string, error)
 	if cmdline == "" {
 		return "", fmt.Errorf("empty command")
 	}
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, config.CommandTimeout)
 	defer cancel()
 
 	var cmd *exec.Cmd
-	if toolSafetyBypass {
+	if config.ToolSafetyBypass {
 		for _, r := range cmdline {
 			if name, bad := commandDenyNames[r]; bad {
 				return "", fmt.Errorf("refusing %s in yolo mode — run one simple command (e.g. %q)",
@@ -1005,8 +996,8 @@ func toolRunCommand(ctx context.Context, args map[string]string) (string, error)
 	cmd.Dir = cwd()
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimRight(string(out), "\n")
-	if len(s) > toolResultCap {
-		s = s[:toolResultCap] + "\n…[truncated]"
+	if len(s) > config.ToolResultCap {
+		s = s[:config.ToolResultCap] + "\n…[truncated]"
 	}
 	if err != nil {
 		if s == "" {
@@ -1022,12 +1013,12 @@ func toolRunCommand(ctx context.Context, args map[string]string) (string, error)
 
 func toolRunWebFetch(ctx context.Context, args map[string]string) (string, error) {
 	rawURL := strings.TrimSpace(args["url"])
-	text, err := fetchReadable(ctx, rawURL)
+	text, err := urlfetch.FetchReadable(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}
-	if len(text) > toolResultCap {
-		text = text[:toolResultCap] + "\n…[truncated]"
+	if len(text) > config.ToolResultCap {
+		text = text[:config.ToolResultCap] + "\n…[truncated]"
 	}
 	return text, nil
 }

@@ -12,6 +12,8 @@ import (
 	"fmt"
 
 	"github.com/sprout-foundry/seed/core"
+
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 )
 
 type replEvents struct{}
@@ -21,15 +23,15 @@ func (e *replEvents) Publish(eventType string, data interface{}) {
 	switch eventType {
 	case core.EventTypeToolStart:
 		name := eventString(data, "tool_name")
-		fmt.Printf("%s %s\n", ansiStyle("tool →", ansiCyan), ansiStyle(name, ansiBold))
+		fmt.Printf("%s %s\n", mdterm.AnsiStyle("tool →", mdterm.AnsiCyan), mdterm.AnsiStyle(name, mdterm.AnsiBold))
 	case core.EventTypeToolEnd:
 		if eventString(data, "status") == core.ToolStatusError {
-			fmt.Printf("%s %s: %s\n", ansiStyle("← error:", ansiRed),
+			fmt.Printf("%s %s: %s\n", mdterm.AnsiStyle("← error:", mdterm.AnsiRed),
 				eventString(data, "tool_name"),
 				firstLine(eventString(data, "result")))
 			return
 		}
-		fmt.Printf("%s %s\n", ansiStyle("← result:", ansiCyan),
+		fmt.Printf("%s %s\n", mdterm.AnsiStyle("← result:", mdterm.AnsiCyan),
 			truncateResultForDisplay(eventString(data, "result")))
 	}
 }

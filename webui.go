@@ -50,6 +50,14 @@ import (
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/conversations"
+	"github.com/sprout-foundry/sprout-local/internal/download"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
+	"github.com/sprout-foundry/sprout-local/internal/urlfetch"
 )
 
 //go:embed all:ui
@@ -71,7 +79,7 @@ type wsClient struct {
 	agentKey string // model+tools config the agent was built for ("|")
 	model    string // selected model name ("" = process default)
 	dir      string // resolved model directory ("" = not yet resolved)
-	conv     *conversation
+	conv     *conversations.Conversation
 }
 
 // ensureAgent returns the connection's seed agent, rebuilding it when the
@@ -94,12 +102,12 @@ func (s *webServer) ensureAgent(c *wsClient, modelDir string, tools bool) error 
 		executor = newToolExecutor(&decliningUI{})
 	}
 	c.provider = newSinterProvider(modelDir)
-	c.provider.SetDisplayMode(mdRaw) // web socket: plain text, no ANSI
+	c.provider.SetDisplayMode(mdterm.Raw) // web socket: plain text, no ANSI
 	agent, err := core.NewAgent(core.Options{
 		Provider:       c.provider,
 		Executor:       executor,
 		SystemPrompt:   webSystemPrompt(tools),
-		MaxIterations:  maxToolSteps,
+		MaxIterations:  config.MaxToolSteps,
 		EventPublisher: &webEvents{c: c},
 		RetryConfig:    core.RetryConfig{MaxAttempts: 1},
 	})
@@ -165,7 +173,7 @@ func warmModel(modelDir, systemPrompt string, tools bool, executor core.ToolExec
 // to copy-paste" behavior for create/write asks, declining to use tools
 // that are actually available.
 func webSystemPrompt(tools bool) string {
-	env := environmentContext()
+	env := config.EnvironmentContext()
 	if !tools {
 		return env
 	}
@@ -206,23 +214,23 @@ func (e *webEvents) Publish(eventType string, data interface{}) {
 
 // agentTranscript extracts the visible conversation (no system messages)
 // from the agent's state.
-func agentTranscript(a *core.Agent) []storedMsg {
+func agentTranscript(a *core.Agent) []conversations.StoredMsg {
 	if a == nil {
 		return nil
 	}
-	out := []storedMsg{}
+	out := []conversations.StoredMsg{}
 	for _, m := range a.State().Messages() {
 		if m.Role == "system" {
 			continue
 		}
-		out = append(out, storedMsg{Role: m.Role, Content: m.Content})
+		out = append(out, conversations.StoredMsg{Role: m.Role, Content: m.Content})
 	}
 	return out
 }
 
 // importTranscript builds agent state from persisted messages (used by
 // resume/load so a rebuilt agent continues with full context).
-func importTranscript(a *core.Agent, msgs []storedMsg) error {
+func importTranscript(a *core.Agent, msgs []conversations.StoredMsg) error {
 	state := core.AgentState{}
 	for _, m := range msgs {
 		state.Messages = append(state.Messages, core.Message{Role: m.Role, Content: m.Content})
@@ -244,14 +252,14 @@ func availableModels() []string {
 	if _, pinned := modelDirEnv(); pinned != "" {
 		return nil // pinned: no listing
 	}
-	root := modelsRoot()
+	root := paths.ModelsRoot()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() && isModelDir(filepath.Join(root, e.Name())) {
+		if e.IsDir() && paths.IsModelDir(filepath.Join(root, e.Name())) {
 			names = append(names, e.Name())
 		}
 	}
@@ -272,13 +280,13 @@ func resolveWebModelDir(name string) (string, error) {
 		return dir, nil
 	}
 	if filepath.IsAbs(name) {
-		if isModelDir(name) {
+		if paths.IsModelDir(name) {
 			return name, nil
 		}
 		return "", fmt.Errorf("%s is not an MLX-format model directory", name)
 	}
-	cand := filepath.Join(modelsRoot(), name)
-	if isModelDir(cand) {
+	cand := filepath.Join(paths.ModelsRoot(), name)
+	if paths.IsModelDir(cand) {
 		return cand, nil
 	}
 	return "", fmt.Errorf("unknown model %q", name)
@@ -365,7 +373,7 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 
 		// Conversation-management frames (no generation).
 		if msg.List {
-			c.enqueue(map[string]any{"conversations": listConversations()})
+			c.enqueue(map[string]any{"conversations": conversations.ListConversations()})
 			continue
 		}
 		if msg.Resume != "" {
@@ -373,14 +381,14 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 			// into a fresh agent and re-send the transcript (after a page
 			// refresh the client's thread is empty; after a mid-chat Stop
 			// the rebuild is idempotent — same completed turns).
-			if conv, err := loadConversation(msg.Resume); err == nil {
+			if conv, err := conversations.LoadConversation(msg.Resume); err == nil {
 				if dir, err := resolveWebModelDir(convModelName(conv)); err == nil {
 					if aerr := s.ensureAgentFor(c, dir, false, conv); aerr == nil {
 						c.enqueue(map[string]any{"conv": conv.ID, "transcript": agentTranscript(c.agent)})
 					}
 				}
 			}
-			c.enqueue(map[string]any{"conversations": listConversations()})
+			c.enqueue(map[string]any{"conversations": conversations.ListConversations()})
 			continue
 		}
 		if msg.Load != "" {
@@ -388,12 +396,12 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if msg.Delete != "" {
-			if err := deleteConversation(msg.Delete); err != nil {
+			if err := conversations.DeleteConversation(msg.Delete); err != nil {
 				c.enqueue(map[string]string{"error": "delete failed: " + err.Error()})
 			} else {
 				c.enqueue(map[string]any{"deleted": msg.Delete})
 			}
-			c.enqueue(map[string]any{"conversations": listConversations()})
+			c.enqueue(map[string]any{"conversations": conversations.ListConversations()})
 			continue
 		}
 		if msg.NewChat {
@@ -410,7 +418,7 @@ func (s *webServer) serveWS(w http.ResponseWriter, r *http.Request) {
 
 // convModelName picks the model a saved conversation ran on, falling back
 // to the process default when unknown.
-func convModelName(conv *conversation) string {
+func convModelName(conv *conversations.Conversation) string {
 	if conv.Model != "" {
 		return conv.Model
 	}
@@ -419,7 +427,7 @@ func convModelName(conv *conversation) string {
 
 // ensureAgentFor is ensureAgent with an initial conversation: a fresh
 // agent whose state is imported from the saved transcript.
-func (s *webServer) ensureAgentFor(c *wsClient, modelDir string, tools bool, conv *conversation) error {
+func (s *webServer) ensureAgentFor(c *wsClient, modelDir string, tools bool, conv *conversations.Conversation) error {
 	c.conv = conv
 	if err := s.ensureAgent(c, modelDir, tools); err != nil {
 		return err
@@ -434,14 +442,14 @@ func (s *webServer) ensureAgentFor(c *wsClient, modelDir string, tools bool, con
 // Replies with the sidebar refresh and the new conversation id.
 func (s *webServer) startConversation(c *wsClient) {
 	c.mu.Lock()
-	c.conv = &conversation{
-		ID:        newConversationID(),
+	c.conv = &conversations.Conversation{
+		ID:        conversations.NewConversationID(),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 	c.agent = nil // fresh agent on the next turn; state starts empty
 	c.mu.Unlock()
-	c.enqueue(map[string]any{"conv": c.conv.ID, "conversations": listConversations()})
+	c.enqueue(map[string]any{"conv": c.conv.ID, "conversations": conversations.ListConversations()})
 }
 
 // pullInFlight serializes handlePull: hf downloads to a shared models root,
@@ -460,7 +468,7 @@ var pullMu struct {
 // reports the new model dir so the client can select it; a RAM-gate
 // refusal or missing hf CLI surfaces as an error frame.
 func (s *webServer) handlePull(c *wsClient, name string) {
-	m, err := findCatalogModel(name)
+	m, err := download.FindCatalogModel(name)
 	if err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
@@ -478,7 +486,7 @@ func (s *webServer) handlePull(c *wsClient, name string) {
 		pullMu.active = false
 		pullMu.Unlock()
 	}()
-	dest, err := downloadModel(ctxBg(), m)
+	dest, err := download.DownloadModel(ctxBg(), m)
 	if err != nil {
 		c.enqueue(map[string]string{"error": err.Error()})
 		return
@@ -487,14 +495,14 @@ func (s *webServer) handlePull(c *wsClient, name string) {
 		"pulled":        m.Name,
 		"dir":           dest,
 		"model":         filepath.Base(dest),
-		"conversations": listConversations(),
+		"conversations": conversations.ListConversations(),
 	})
 }
 
 // loadConversation restores a saved conversation into a fresh agent and
 // streams the transcript back for rendering.
 func (s *webServer) loadConversation(c *wsClient, id string) {
-	conv, err := loadConversation(id)
+	conv, err := conversations.LoadConversation(id)
 	if err != nil {
 		c.enqueue(map[string]string{"error": "load failed: " + err.Error()})
 		return
@@ -511,7 +519,7 @@ func (s *webServer) loadConversation(c *wsClient, id string) {
 	// The transcript is the only frame that carries a message list; the
 	// client rebuilds its thread from it wholesale.
 	c.enqueue(map[string]any{"conv": conv.ID, "model": conv.Model, "transcript": agentTranscript(c.agent)})
-	c.enqueue(map[string]any{"conversations": listConversations()})
+	c.enqueue(map[string]any{"conversations": conversations.ListConversations()})
 }
 
 // handleTurn runs one user→assistant exchange through the connection's
@@ -548,8 +556,8 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	// the user turn (same protocol as the old Python server). Fetch
 	// failures become notes; the chat continues without the page.
 	content := prompt
-	for _, u := range extractPromptURLs(prompt) {
-		page, err := fetchReadable(ctx, u)
+	for _, u := range urlfetch.ExtractPromptURLs(prompt) {
+		page, err := urlfetch.FetchReadable(ctx, u)
 		if err != nil {
 			c.enqueue(map[string]string{"note": fmt.Sprintf("couldn't fetch %s: %v", u, err)})
 			continue
@@ -560,8 +568,8 @@ func (s *webServer) handleTurn(ctx context.Context, c *wsClient, modelName strin
 	// First prompt without an explicit new-chat: start a conversation now
 	// so the turn is captured from the beginning.
 	if c.conv == nil {
-		c.conv = &conversation{
-			ID:        newConversationID(),
+		c.conv = &conversations.Conversation{
+			ID:        conversations.NewConversationID(),
 			CreatedAt: time.Now(),
 		}
 		c.enqueue(map[string]any{"conv": c.conv.ID})
@@ -677,10 +685,10 @@ func (c *wsClient) syncConversation(lastReply string) {
 	c.conv.Model = c.model
 	c.conv.Messages = msgs
 	if c.conv.Title == "" {
-		c.conv.Title = conversationTitleFromStored(msgs)
+		c.conv.Title = conversations.ConversationTitleFromStored(msgs)
 	}
 	c.conv.UpdatedAt = time.Now()
-	saveConversation(c.conv)
+	conversations.SaveConversation(c.conv)
 }
 
 // lastAssistantText returns the newest assistant message in the agent
@@ -772,7 +780,7 @@ func (s *webServer) handleModels(w http.ResponseWriter, r *http.Request) {
 // this to offer downloads when no models are installed (a model-less
 // machine otherwise has an empty picker and no way in).
 func (s *webServer) handlePullCatalog(w http.ResponseWriter, r *http.Request) {
-	ram := totalSystemRAM()
+	ram := sysinfo.TotalSystemRAM()
 	suggested := catalog.SuggestedForRAM(ram)
 	type entry struct {
 		Name string `json:"name"`
@@ -798,7 +806,7 @@ func (s *webServer) handlePullCatalog(w http.ResponseWriter, r *http.Request) {
 		"catalog":     entries,
 		"suggested":   suggested.Name,
 		"installed":   availableModels(),
-		"models_root": modelsRoot(),
+		"models_root": paths.ModelsRoot(),
 	})
 }
 

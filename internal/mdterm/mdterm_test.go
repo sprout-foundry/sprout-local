@@ -1,4 +1,4 @@
-package main
+package mdterm
 
 import (
 	"bytes"
@@ -19,14 +19,14 @@ func TestDetectMDModeFileIsRaw(t *testing.T) {
 	}
 	defer f.Close()
 	// Regular files are not character devices → pipes/redirects stay raw.
-	if m := detectMDMode(f); m != mdRaw {
-		t.Errorf("detectMDMode(file) = %d, want mdRaw", m)
+	if m := detectMDMode(f); m != Raw {
+		t.Errorf("detectMDMode(file) = %d, want Raw", m)
 	}
 }
 
 func TestRawModePassesThrough(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdRaw)
+	p := NewStreamPrinter(&buf, Raw)
 	p.Write("# head **bold**\nsecond")
 	if buf.String() != "# head **bold**\nsecond" {
 		t.Errorf("raw mode mangled output: %q", buf.String())
@@ -38,14 +38,14 @@ func TestRawModePassesThrough(t *testing.T) {
 
 func TestStyledBlocks(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("# Title\n- item one\n> quoted\n---\nplain **bold**\n")
 
 	want := "Title\n• item one\n▌ quoted\n" + strings.Repeat("─", 40) + "\nplain bold\n"
 	if got := stripANSI(buf.String()); got != want {
 		t.Errorf("stripped output:\n got %q\nwant %q", got, want)
 	}
-	for _, seq := range []string{ansiBold, ansiBlue, ansiItalic, ansiMagenta, ansiGray} {
+	for _, seq := range []string{AnsiBold, AnsiBlue, AnsiItalic, AnsiMagenta, AnsiGray} {
 		if !strings.Contains(buf.String(), seq) {
 			t.Errorf("expected escape %q missing from %q", seq, buf.String())
 		}
@@ -57,7 +57,7 @@ func TestStyledBlocks(t *testing.T) {
 
 func TestOrderedLists(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("1. first\n2) second\nplain\n")
 	want := "1. first\n2. second\nplain\n"
 	if got := stripANSI(buf.String()); got != want {
@@ -67,7 +67,7 @@ func TestOrderedLists(t *testing.T) {
 
 func TestStreamingAcrossChunks(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	for _, chunk := range []string{"# Ti", "tle\nhel", "lo **wor", "ld**\n"} {
 		p.Write(chunk)
 	}
@@ -76,14 +76,14 @@ func TestStreamingAcrossChunks(t *testing.T) {
 	if !strings.Contains(stripped, "Title\n") {
 		t.Errorf("heading split across chunks lost: %q", stripped)
 	}
-	if !strings.Contains(buf.String(), ansiBold+"world"+ansiReset) {
+	if !strings.Contains(buf.String(), AnsiBold+"world"+AnsiReset) {
 		t.Errorf("bold split across chunks lost: %q", buf.String())
 	}
 }
 
 func TestCloseFlushesPartialLine(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("no trailing newline")
 	p.Close()
 	if stripANSI(buf.String()) != "no trailing newline" {
@@ -93,7 +93,7 @@ func TestCloseFlushesPartialLine(t *testing.T) {
 
 func TestFenceBlocksNotInlineStyled(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("```go\nx := **not** bold\n```\nafter **bold**\n")
 
 	if n := strings.Count(stripANSI(buf.String()), "```"); n != 2 {
@@ -103,32 +103,32 @@ func TestFenceBlocksNotInlineStyled(t *testing.T) {
 		t.Errorf("code line not indented: %q", stripANSI(buf.String()))
 	}
 	// Exactly one bold span: the "after" line, never the fenced contents.
-	if n := strings.Count(buf.String(), ansiBold); n != 1 {
+	if n := strings.Count(buf.String(), AnsiBold); n != 1 {
 		t.Errorf("got %d bold spans, want 1 (fence contents must stay plain): %q", n, buf.String())
 	}
 }
 
 func TestInlineCodeProtectedFromEmphasis(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("use `**x**` here\n")
-	if strings.Contains(buf.String(), ansiBold) {
+	if strings.Contains(buf.String(), AnsiBold) {
 		t.Errorf("inline code contents were bolded: %q", buf.String())
 	}
-	if !strings.Contains(buf.String(), ansiCyan) {
+	if !strings.Contains(buf.String(), AnsiCyan) {
 		t.Errorf("inline code not styled: %q", buf.String())
 	}
 }
 
 func TestInlineSpans(t *testing.T) {
 	var buf bytes.Buffer
-	p := newStreamPrinter(&buf, mdStyled)
+	p := NewStreamPrinter(&buf, Styled)
 	p.Write("*soft* ~~gone~~ see [t](https://e.co)\n")
 	want := "soft gone see t (https://e.co)\n"
 	if got := stripANSI(buf.String()); got != want {
 		t.Errorf("stripped output:\n got %q\nwant %q", got, want)
 	}
-	for _, seq := range []string{ansiItalic, ansiStrike, ansiUnder} {
+	for _, seq := range []string{AnsiItalic, AnsiStrike, AnsiUnder} {
 		if !strings.Contains(buf.String(), seq) {
 			t.Errorf("expected escape %q missing from %q", seq, buf.String())
 		}
@@ -141,9 +141,9 @@ func TestHighlightCode(t *testing.T) {
 		t.Errorf("highlightCode changed text: %q", got)
 	}
 	for name, seq := range map[string]string{
-		"number":  ansiYellow,
-		"comment": ansiGray,
-		"keyword": ansiBlue,
+		"number":  AnsiYellow,
+		"comment": AnsiGray,
+		"keyword": AnsiBlue,
 	} {
 		if !strings.Contains(highlightCode(sampleFor(name)), seq) {
 			t.Errorf("%s token not tinted in %q", name, sampleFor(name))
@@ -151,10 +151,10 @@ func TestHighlightCode(t *testing.T) {
 	}
 	// A string containing "//" must not yield a comment tint inside it.
 	s := highlightCode(`s := "http://x"`)
-	if strings.Count(s, ansiGray) != 0 {
+	if strings.Count(s, AnsiGray) != 0 {
 		t.Errorf("comment tint inside string: %q", s)
 	}
-	if !strings.Contains(s, ansiGreen) {
+	if !strings.Contains(s, AnsiGreen) {
 		t.Errorf("string not tinted: %q", s)
 	}
 }

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
 )
 
 func TestExtractToolCalls(t *testing.T) {
@@ -141,16 +144,16 @@ func TestExecToolCallMissingParam(t *testing.T) {
 func TestHandleToolsCommand(t *testing.T) {
 	// Capture nothing; just exercise the toggles.
 	handleToolsCommand("on")
-	if !toolsRequested || toolSafetyBypass {
-		t.Errorf("/tools on → requested=%v bypass=%v", toolsRequested, toolSafetyBypass)
+	if !config.ToolsRequested || config.ToolSafetyBypass {
+		t.Errorf("/tools on → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
 	handleToolsCommand("yolo")
-	if !toolsRequested || !toolSafetyBypass {
-		t.Errorf("/tools yolo → requested=%v bypass=%v", toolsRequested, toolSafetyBypass)
+	if !config.ToolsRequested || !config.ToolSafetyBypass {
+		t.Errorf("/tools yolo → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
 	handleToolsCommand("off")
-	if toolsRequested || toolSafetyBypass {
-		t.Errorf("/tools off → requested=%v bypass=%v", toolsRequested, toolSafetyBypass)
+	if config.ToolsRequested || config.ToolSafetyBypass {
+		t.Errorf("/tools off → requested=%v bypass=%v", config.ToolsRequested, config.ToolSafetyBypass)
 	}
 }
 
@@ -196,7 +199,7 @@ func TestSkills(t *testing.T) {
 
 func TestToolStreamFilter(t *testing.T) {
 	var out strings.Builder
-	printer := newStreamPrinter(&out, mdRaw)
+	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
 	f := &toolStreamFilter{printer: printer, tools: true}
 	f.write("Let me check. <tool_call>\n<function=read_fi")
 	f.write("le>\n<parameter=path>\nmain.go\n</parameter>\n</function>\n</tool_call> done.")
@@ -213,7 +216,7 @@ func TestToolStreamFilter(t *testing.T) {
 
 func TestToolStreamFilterPassThrough(t *testing.T) {
 	var out strings.Builder
-	printer := newStreamPrinter(&out, mdRaw)
+	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
 	f := &toolStreamFilter{printer: printer, tools: false}
 	f.write("plain answer, no filtering")
 	f.close()
@@ -228,7 +231,7 @@ func TestToolStreamFilterPassThrough(t *testing.T) {
 func TestToolStreamFilterSeedBuffer(t *testing.T) {
 	var out strings.Builder
 	var seed strings.Builder
-	printer := newStreamPrinter(&out, mdRaw)
+	printer := mdterm.NewStreamPrinter(&out, mdterm.Raw)
 	f := &toolStreamFilter{printer: printer, tools: true, onDelta: func(s string) { seed.WriteString(s) }}
 	f.write("Check. <tool_call>\n<function=read_file>\n<parameter=path>\nx\n</parameter>\n</function>\n</tool_call> Done.")
 	f.close()

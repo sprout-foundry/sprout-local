@@ -1,4 +1,4 @@
-package main
+package urlfetch
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func TestExtractPromptURLs(t *testing.T) {
 		{"bare url ignored", "https://example.com without hash", nil},
 	}
 	for _, tt := range tests {
-		got := extractPromptURLs(tt.prompt)
+		got := ExtractPromptURLs(tt.prompt)
 		if len(got) != len(tt.want) {
 			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
 			continue
@@ -73,39 +73,16 @@ func TestFetchReadable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	text, err := fetchReadable(context.Background(), srv.URL)
+	text, err := FetchReadable(context.Background(), srv.URL)
 	if err != nil {
-		t.Fatalf("fetchReadable: %v", err)
+		t.Fatalf("FetchReadable: %v", err)
 	}
 	if !contains(text, "banana harvest") {
-		t.Errorf("fetchReadable = %q, want page text", text)
+		t.Errorf("FetchReadable = %q, want page text", text)
 	}
 
 	// failure surfaces as an error, never a panic
-	if _, err := fetchReadable(context.Background(), srv.URL+"/missing"); err == nil {
+	if _, err := FetchReadable(context.Background(), srv.URL+"/missing"); err == nil {
 		t.Error("expected error for HTTP 404")
-	}
-}
-
-func TestParseYesNo(t *testing.T) {
-	tests := []struct {
-		in      string
-		verdict bool
-	}{
-		{"Yes", true},
-		{"yes.", true},
-		{"YES", true},
-		{"No", false},
-		{"NO — the answer is wrong", false},
-		{"  yes  ", true},
-		{"maybe", true}, // inconclusive counts as pass
-		{"", true},
-		{"The answer is No.", false},
-	}
-	for _, tt := range tests {
-		v, ok := parseYesNo(tt.in)
-		if v != tt.verdict {
-			t.Errorf("parseYesNo(%q) = %v (ok=%v), want %v", tt.in, v, ok, tt.verdict)
-		}
 	}
 }

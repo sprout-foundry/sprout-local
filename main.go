@@ -26,6 +26,11 @@ import (
 
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/sinter/llm"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/download"
+	"github.com/sprout-foundry/sprout-local/internal/mdterm"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 // Session defaults.
@@ -97,15 +102,15 @@ func main() {
 	flagMaxTokens := fs.Int("max-tokens", 0, "Generation token cap (default 4096; env SPROUT_LOCAL_MAX_TOKENS)")
 	fs.Parse(os.Args[1:])
 
-	initTunables()
+	config.InitTunables()
 	if *flagMaxSteps > 0 {
-		maxToolSteps = *flagMaxSteps
+		config.MaxToolSteps = *flagMaxSteps
 	}
 	if *flagMaxTokens > 0 {
-		maxTokens = *flagMaxTokens
+		config.MaxTokens = *flagMaxTokens
 	}
-	loadToolsPreference()
-	if prefPath := toolsPreferencePath(); prefPath != "" && !toolsRequested {
+	config.LoadToolsPreference()
+	if prefPath := config.ToolsPreferencePath(); prefPath != "" && !config.ToolsRequested {
 		// A persisted off is a deliberate earlier choice, but it silently
 		// overrides the default-on after every rebuild — surface it.
 		log.Printf("tools off (persisted in %s — run /tools on to re-enable)", prefPath)
@@ -113,11 +118,11 @@ func main() {
 	if *flagTools != "" {
 		switch strings.ToLower(*flagTools) {
 		case "on":
-			toolsRequested, toolSafetyBypass = true, false
+			config.ToolsRequested, config.ToolSafetyBypass = true, false
 		case "off":
-			toolsRequested, toolSafetyBypass = false, false
+			config.ToolsRequested, config.ToolSafetyBypass = false, false
 		case "yolo":
-			toolsRequested, toolSafetyBypass = true, true
+			config.ToolsRequested, config.ToolSafetyBypass = true, true
 		default:
 			log.Printf("ignoring -tools %q: want on, off, or yolo", *flagTools)
 		}
@@ -135,7 +140,7 @@ func main() {
 			log.Printf("skill: %v", err)
 		}
 	} else if n > 0 {
-		log.Printf("loaded %d skill%s from %s", n, plural(n), skillsDir())
+		log.Printf("loaded %d skill%s from %s", n, plural(n), paths.SkillsDir())
 	}
 
 	// -serve: warm the default model's system+tools prefix in the
@@ -144,28 +149,28 @@ func main() {
 	// going to do it on first request anyway.
 	if *flagServe {
 		executor := core.ToolExecutor(core.NoopExecutor)
-		if toolsRequested {
+		if config.ToolsRequested {
 			executor = newToolExecutor(nil)
 		}
 		dir := resolveModelDir()
 		if dir != "" {
-			go warmModel(dir, effectiveSystemPrompt(*flagSystem), toolsRequested, executor)
+			go warmModel(dir, config.EffectiveSystemPrompt(*flagSystem), config.ToolsRequested, executor)
 		}
 	}
 
 	// -pull: fetch the model first, then drop into normal startup with the
-	// new model selected. A bare -pull lists the catalog and exits.
+// new model selected. A bare -pull lists the catalog and exits.
 	if *flagPull {
 		name := strings.TrimSpace(strings.Join(fs.Args(), " "))
 		if name == "" {
-			printPullList()
+			download.PrintPullList()
 			return
 		}
-		m, err := findCatalogModel(name)
+		m, err := download.FindCatalogModel(name)
 		if err != nil {
 			log.Fatalf("Fatal: %v", err)
 		}
-		dest, err := downloadModel(ctxBg(), m)
+		dest, err := download.DownloadModel(ctxBg(), m)
 		if err != nil {
 			log.Fatalf("Fatal: %v", err)
 		}
@@ -208,7 +213,7 @@ func main() {
 
 	// One-shot mode: single completion, no REPL.
 	if *flagPrompt != "" {
-		runOneShot(effectiveSystemPrompt(*flagSystem), *flagPrompt, engine, modelPath)
+		runOneShot(config.EffectiveSystemPrompt(*flagSystem), *flagPrompt, engine, modelPath)
 		return
 	}
 
@@ -245,7 +250,7 @@ func runOneShotPipe(engine, modelPath string, noLog, eom bool) error {
 		return nil
 	}
 
-	text, err := streamChat(ctxBg(), req.Messages, stdoutPrinter().writeDelta)
+	text, err := streamChat(ctxBg(), req.Messages, mdterm.StdoutPrinter().WriteDelta)
 	fmt.Println()
 	if err != nil {
 		return err
@@ -274,7 +279,7 @@ func runOneShot(systemPrompt, prompt, engine, modelPath string) {
 	}
 	messages = append(messages, llm.ChatMessage{Role: "user", Content: prompt})
 
-	text, err := streamChat(ctxBg(), messages, stdoutPrinter().writeDelta)
+	text, err := streamChat(ctxBg(), messages, mdterm.StdoutPrinter().WriteDelta)
 	fmt.Println() // newline after the streamed response
 	if err != nil {
 		log.Fatalf("Fatal: %v", err)
@@ -299,7 +304,7 @@ func runREPL(engine, modelPath, systemPrompt string) {
 	printWelcome(engine, modelPath)
 
 	for {
-		fmt.Print("\n" + ansiStyle(">>>", ansiMagenta) + " ")
+		fmt.Print("\n" + mdterm.AnsiStyle(">>>", mdterm.AnsiMagenta) + " ")
 		line, err := reader.ReadString('\n')
 		if err != nil { // EOF (Ctrl-D) ends the session
 			fmt.Println()
@@ -330,7 +335,7 @@ func runREPL(engine, modelPath, systemPrompt string) {
 		// ── Chat turn ────────────────────────────────────────────────
 		turnErr := runChatTurn(st, line)
 		if turnErr != nil {
-			fmt.Printf("%s %v\n", ansiStyle("Error:", ansiRed), turnErr)
+			fmt.Printf("%s %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), turnErr)
 			appendLog("error", st.model, st.systemPrompt, line, errString(turnErr))
 		}
 	}
@@ -406,7 +411,7 @@ func (s *replState) rebuildAgent(carry bool) {
 		saved, _ = s.agent.ExportState()
 	}
 	executor := core.ToolExecutor(core.NoopExecutor)
-	if toolsRequested {
+	if config.ToolsRequested {
 		executor = newToolExecutor(s.ui)
 	}
 	s.provider = newSinterProvider(s.model)
@@ -414,8 +419,8 @@ func (s *replState) rebuildAgent(carry bool) {
 		Provider:       s.provider,
 		Executor:       executor,
 		UI:             s.ui,
-		SystemPrompt:   effectiveSystemPrompt(s.systemPrompt),
-		MaxIterations:  maxToolSteps,
+		SystemPrompt:   config.EffectiveSystemPrompt(s.systemPrompt),
+		MaxIterations:  config.MaxToolSteps,
 		EventPublisher: &replEvents{},
 		Debug:          os.Getenv("SPROUT_LOCAL_SEED_DEBUG") != "",
 		// In-process sinter has no transient network errors; a failure is
@@ -423,13 +428,13 @@ func (s *replState) rebuildAgent(carry bool) {
 		RetryConfig: core.RetryConfig{MaxAttempts: 1},
 	})
 	if err != nil {
-		fmt.Printf("%s seed agent: %v\n", ansiStyle("Error:", ansiRed), err)
+		fmt.Printf("%s seed agent: %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		s.agent = nil
 		return
 	}
 	if len(saved) > 0 {
 		if err := agent.ImportState(saved); err != nil {
-			fmt.Printf("%s restoring history: %v\n", ansiStyle("Error:", ansiRed), err)
+			fmt.Printf("%s restoring history: %v\n", mdterm.AnsiStyle("Error:", mdterm.AnsiRed), err)
 		}
 	}
 	s.agent = agent
@@ -440,8 +445,8 @@ func (s *replState) rebuildAgent(carry bool) {
 // history, compaction, and tool iteration; chatllm supplies streaming
 // display, tool-call status lines, and session logging.
 func runChatTurn(st *replState, userLine string) error {
-	printer := stdoutPrinter()
-	st.provider.SetDisplay(printer.writeDelta)
+	printer := mdterm.StdoutPrinter()
+	st.provider.SetDisplay(printer.WriteDelta)
 	defer st.provider.SetDisplay(nil)
 
 	startTurnMetrics()
@@ -454,7 +459,7 @@ func runChatTurn(st *replState, userLine string) error {
 	text, err := st.agent.RunStream(streamCtx, userLine)
 	printer.Close()
 	fmt.Println()
-	fmt.Printf("%s%s%s\n", ansiGray, st.metricsLine(), ansiReset)
+	fmt.Printf("%s%s%s\n", mdterm.AnsiGray, st.metricsLine(), mdterm.AnsiReset)
 
 	if err != nil {
 		if strings.Contains(errString(err), "context canceled") ||
@@ -468,11 +473,11 @@ func runChatTurn(st *replState, userLine string) error {
 		// original error is reported.
 		if errors.Is(err, core.ErrMaxIterations) {
 			fmt.Printf("%s tool budget reached — forcing a final answer\n",
-				ansiStyle("Note:", ansiYellow))
+				mdterm.AnsiStyle("Note:", mdterm.AnsiYellow))
 			text, err = st.agent.RunStream(streamCtx, graceFinalQuery)
 			printer.Close()
 			fmt.Println()
-			fmt.Printf("%s%s%s\n", ansiGray, st.metricsLine(), ansiReset)
+			fmt.Printf("%s%s%s\n", mdterm.AnsiGray, st.metricsLine(), mdterm.AnsiReset)
 			if err != nil {
 				return err
 			}
@@ -517,7 +522,7 @@ func logTurn(st *replState, userLine, reply string) {
 // <function name=" for MiniCPM5); once seen, go silent until the matching
 // close has passed. Text after the block flows again normally.
 type toolStreamFilter struct {
-	printer *streamPrinter // terminal display (may be nil)
+	printer *mdterm.StreamPrinter // terminal display (may be nil)
 	onDelta func(string)   // seed stream handler feed (may be nil)
 	tools   bool
 	tail    string // held-back characters not yet emitted
@@ -778,7 +783,7 @@ func printHelp() {
 	fmt.Println("  /tools [on|off|yolo]  Toggle tool calling (read_file, write_file, run_command, web_fetch); remembered across sessions")
 	fmt.Println("  /exit            Quit (also /quit, /q)")
 	fmt.Println()
-	fmt.Println("Model refs: name under " + modelsRoot() + ", catalog name, or a path.")
+	fmt.Println("Model refs: name under " + paths.ModelsRoot() + ", catalog name, or a path.")
 	fmt.Println(`Multiline: type """ alone on a line, type your text, end with """ on its own line.`)
 	fmt.Println(`One-shot:   chatllm -p "your question"`)
 	fmt.Println(`Web UI:     chatllm -serve [-addr 127.0.0.1:8321]`)

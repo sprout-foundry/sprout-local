@@ -15,6 +15,10 @@ import (
 
 	"github.com/sprout-foundry/sinter/llm"
 	"github.com/sprout-foundry/sinter/llm/catalog"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
+	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
 )
 
 // Per-platform model registrations (sinter blank-imports) live in
@@ -57,48 +61,6 @@ func residentLimit() int {
 	return 2
 }
 
-func homeDir() string {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-// stateRoot is sprout-local's per-user state directory:
-// SPROUT_LOCAL_STATE_ROOT, or ~/.sprout-local when unset. All other state
-// locations derive from it unless they have their own override:
-// conversations → <stateRoot>/conversations (legacy ~/.chatllm compat),
-// skills → <stateRoot>/skills (SPROUT_LOCAL_SKILLS_DIR override, legacy
-// ~/.chatllm compat), session logs + raw dumps → <stateRoot>/sessions,
-// models → <stateRoot>/models (SPROUT_LOCAL_MODELS_ROOT override, see
-// modelsRoot in download.go).
-func stateRoot() string {
-	if root := os.Getenv("SPROUT_LOCAL_STATE_ROOT"); root != "" {
-		return root
-	}
-	h := homeDir()
-	if h == "" {
-		return ""
-	}
-	return filepath.Join(h, ".sprout-local")
-}
-
-// sessionsDir is the session-log directory (<stateRoot>/sessions, see
-// stateRoot). "" when no home directory can be resolved.
-func sessionsDir() string {
-	root := stateRoot()
-	if root == "" {
-		return ""
-	}
-	return filepath.Join(root, "sessions")
-}
-
-func dirExists(dir string) bool {
-	st, err := os.Stat(dir)
-	return err == nil && st.IsDir()
-}
-
 // preferredModelName is the first model picked when scanning the models
 // root: the q5 tuned 4B export. Below ~5-bit the 4B tier loses too much
 // to follow tool-call format and multi-step instructions reliably; the q5
@@ -125,7 +87,7 @@ func modelDirEnv() (varName, dir string) {
 // otherwise the alphabetically-first model dir. A missing or empty root
 // yields "" — the caller surfaces the actionable error.
 func bestInstalledModel() string {
-	root := modelsRoot()
+	root := paths.ModelsRoot()
 	if root == "" {
 		return ""
 	}
@@ -135,7 +97,7 @@ func bestInstalledModel() string {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() || !isModelDir(filepath.Join(root, e.Name())) {
+		if !e.IsDir() || !paths.IsModelDir(filepath.Join(root, e.Name())) {
 			continue
 		}
 		if e.Name() == preferredModelName {
@@ -166,33 +128,20 @@ func bestInstalledModel() string {
 //     see
 func resolveModelDir() string {
 	if varName, envDir := modelDirEnv(); envDir != "" {
-		if isModelDir(envDir) {
+		if paths.IsModelDir(envDir) {
 			return envDir
 		}
 		log.Fatalf("%s=%s does not look like a model directory (need config.json + tokenizer.json + *.safetensors)", varName, envDir)
 	}
-	root := modelsRoot()
+	root := paths.ModelsRoot()
 	if root != "" {
-		if m, err := catalog.SelectModelForRAM(root, totalSystemRAM()); err == nil && m != nil {
-			if isModelDir(m.Dir) {
+		if m, err := catalog.SelectModelForRAM(root, sysinfo.TotalSystemRAM()); err == nil && m != nil {
+			if paths.IsModelDir(m.Dir) {
 				return m.Dir
 			}
 		}
 	}
 	return bestInstalledModel()
-}
-
-// isModelDir reports whether dir contains the files sinter needs to load a
-// model directly (config + tokenizer + at least one weights file).
-func isModelDir(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
-		return false
-	}
-	matches, _ := filepath.Glob(filepath.Join(dir, "*.safetensors"))
-	return len(matches) > 0
 }
 
 // loadModelDir loads and caches a sinter model by directory, so switching
@@ -513,7 +462,7 @@ func runGeneration(
 	rendered := m.FormatChat(messages)
 
 	cfg := llm.DefaultGenerateConfig()
-	cfg.MaxTokens = maxTokens
+	cfg.MaxTokens = config.MaxTokens
 	cfg.Temperature = temperature
 	cfg.ThinkingTokens = false // filter <think>…</think> at the token layer
 
@@ -610,7 +559,7 @@ func evictModelsLocked(keep int, recent string) {
 // dumpRawFull writes the unhygiened stream with a reason header — the
 // forensic view when hygiene eats an entire generation.
 func dumpRawFull(modelDir, text, note string) {
-	dir := filepath.Join(sessionsDir(), "raw")
+	dir := filepath.Join(paths.SessionsDir(), "raw")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
@@ -629,7 +578,7 @@ func dumpRawFull(modelDir, text, note string) {
 // timestamped file under <stateRoot>/sessions/raw/. Best effort: debugging
 // output must never break the chat.
 func dumpRaw(modelDir, text string) {
-	dir := filepath.Join(sessionsDir(), "raw")
+	dir := filepath.Join(paths.SessionsDir(), "raw")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
@@ -729,10 +678,7 @@ func ctxBg() context.Context { return context.Background() }
 const endOfMessage = "[END_OF_MESSAGE]"
 
 // Generation parameters for chat. Higher temperature than gmitllm's 0.2 —
-// conversation benefits from a little more variety. maxTokens is the
-// session default (runtime.go makes it tunable via SPROUT_LOCAL_MAX_TOKENS
-// or -max-tokens).
-const (
-	defaultMaxTokens = 4096
-	temperature      = 0.3
-)
+// conversation benefits from a little more variety. The maxTokens cap
+// lives in the config package (tunable via SPROUT_LOCAL_MAX_TOKENS or
+// -max-tokens).
+const temperature = 0.3

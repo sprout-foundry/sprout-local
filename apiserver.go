@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm/openaisserver"
+	"github.com/sprout-foundry/sprout-local/internal/config"
 )
 
 // apiServer routes OpenAI-style requests to per-model openaisserver
@@ -65,7 +66,7 @@ func (a *apiServer) serverFor(name string) (*openaisserver.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := openaisserver.New(m, filepath.Base(dir), maxTokens)
+	s := openaisserver.New(m, filepath.Base(dir), config.MaxTokens)
 	a.byID[filepath.Base(dir)] = s
 	return s, nil
 }

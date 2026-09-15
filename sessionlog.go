@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sprout-foundry/sprout-local/internal/paths"
 )
 
 var (
@@ -22,7 +24,7 @@ var (
 // defaultLogPath returns <stateRoot>/sessions/<YYYYMMDDHHMMSS>.log,
 // creating the directory when needed.
 func defaultLogPath() string {
-	dir := sessionsDir()
+	dir := paths.SessionsDir()
 	if dir == "" {
 		return ""
 	}

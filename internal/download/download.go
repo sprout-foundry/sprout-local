@@ -1,9 +1,9 @@
-package main
+package download
 
 // ---------------------------------------------------------------------------
-// Model download: `chatllm -pull [name]` fetches an MLX-format model from
-// HuggingFace into the shared models root, using sinter's llm/catalog for
-// metadata (repo, include globs, RAM tiers).
+// Model download: `sprout-local -pull [name]` fetches an MLX-format model
+// from HuggingFace into the shared models root, using sinter's llm/catalog
+// for metadata (repo, include globs, RAM tiers).
 //
 // Deliberately app-level glue, not part of sinter: the engine stays
 // download-free (its README keeps the catalog separate "so apps can keep
@@ -24,26 +24,15 @@ import (
 	"time"
 
 	"github.com/sprout-foundry/sinter/llm/catalog"
+
+	"github.com/sprout-foundry/sprout-local/internal/paths"
+	"github.com/sprout-foundry/sprout-local/internal/sysinfo"
 )
 
-// modelsRoot is the on-device models directory: SPROUT_LOCAL_MODELS_ROOT,
-// or <stateRoot>/models (default ~/.sprout-local/models) when unset.
-// Models land here from -pull and are listed by /models.
-func modelsRoot() string {
-	if root := os.Getenv("SPROUT_LOCAL_MODELS_ROOT"); root != "" {
-		return root
-	}
-	state := stateRoot()
-	if state == "" {
-		return ""
-	}
-	return filepath.Join(state, "models")
-}
-
-// findCatalogModel resolves a catalog entry by canonical name, accepting a
+// FindCatalogModel resolves a catalog entry by canonical name, accepting a
 // unique prefix (e.g. "qwen3.5-4" → "qwen3.5-4b"). Empty name returns an
 // error listing the available models.
-func findCatalogModel(name string) (catalog.CatalogModel, error) {
+func FindCatalogModel(name string) (catalog.CatalogModel, error) {
 	models := catalog.ModelCatalog
 	if name == "" {
 		var names []string
@@ -65,7 +54,7 @@ func findCatalogModel(name string) (catalog.CatalogModel, error) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return catalog.CatalogModel{}, fmt.Errorf("unknown model %q (try: chatllm -pull for the list)", name)
+		return catalog.CatalogModel{}, fmt.Errorf("unknown model %q (try: sprout-local -pull for the list)", name)
 	default:
 		var names []string
 		for _, m := range matches {
@@ -75,10 +64,11 @@ func findCatalogModel(name string) (catalog.CatalogModel, error) {
 	}
 }
 
-// checkRAMGate refuses downloads the machine cannot run, warns on tight
-// fits. Honors SINTER_ALLOW_OVERWEIGHT (the same override the sinter engine
-// gate uses) to skip the hard refusal. ramBytes of 0 means unknown: no gate.
-func checkRAMGate(m catalog.CatalogModel, ramBytes uint64) error {
+// CheckRAMGate refuses downloads the machine cannot run, warns on tight
+// fits. Honors SINTER_ALLOW_OVERWEIGHT (the same override the sinter
+// engine gate uses) to skip the hard refusal. ramBytes of 0 means
+// unknown: no gate.
+func CheckRAMGate(m catalog.CatalogModel, ramBytes uint64) error {
 	if m.MinRAMSelect == 0 || ramBytes == 0 {
 		return nil
 	}
@@ -87,20 +77,20 @@ func checkRAMGate(m catalog.CatalogModel, ramBytes uint64) error {
 	case ram < m.MinRAMSelect:
 		if os.Getenv("SINTER_ALLOW_OVERWEIGHT") != "" {
 			fmt.Printf("warning: %s needs %s RAM; this machine has %s (SINTER_ALLOW_OVERWEIGHT set — proceeding)\n",
-				m.Name, humanBytes(m.MinRAMSelect), humanBytes(ram))
+				m.Name, HumanBytes(m.MinRAMSelect), HumanBytes(ram))
 			return nil
 		}
 		return fmt.Errorf("%s needs at least %s of RAM; this machine has %s (set SINTER_ALLOW_OVERWEIGHT to override)",
-			m.Name, humanBytes(m.MinRAMSelect), humanBytes(ram))
+			m.Name, HumanBytes(m.MinRAMSelect), HumanBytes(ram))
 	case ram < m.MinRAMSuggested:
 		fmt.Printf("warning: %s runs best with %s RAM; this machine has %s — expect tight memory\n",
-			m.Name, humanBytes(m.MinRAMSuggested), humanBytes(ram))
+			m.Name, HumanBytes(m.MinRAMSuggested), HumanBytes(ram))
 	}
 	return nil
 }
 
-// buildHFArgs constructs the hf download command line. Split out for tests.
-func buildHFArgs(m catalog.CatalogModel, dest string) []string {
+// BuildHFArgs constructs the hf download command line. Split out for tests.
+func BuildHFArgs(m catalog.CatalogModel, dest string) []string {
 	// When HFInclude is set, files land with their repo-path prefix
 	// preserved, so download into the parent of dest and the include
 	// subdir completes the path (sprout's EnsureModel approach).
@@ -115,11 +105,11 @@ func buildHFArgs(m catalog.CatalogModel, dest string) []string {
 	return append(args, "--local-dir", localDir)
 }
 
-// downloadModel runs the hf download for a catalog entry into the models
+// DownloadModel runs the hf download for a catalog entry into the models
 // root, streaming disk-based progress to stdout. Returns the model
 // directory on success.
-func downloadModel(ctx context.Context, m catalog.CatalogModel) (string, error) {
-	if err := checkRAMGate(m, totalSystemRAM()); err != nil {
+func DownloadModel(ctx context.Context, m catalog.CatalogModel) (string, error) {
+	if err := CheckRAMGate(m, sysinfo.TotalSystemRAM()); err != nil {
 		return "", err
 	}
 
@@ -131,15 +121,15 @@ func downloadModel(ctx context.Context, m catalog.CatalogModel) (string, error) 
 		}
 	}
 
-	dest := filepath.Join(modelsRoot(), m.Dir)
-	if isModelDir(dest) {
+	dest := filepath.Join(paths.ModelsRoot(), m.Dir)
+	if paths.IsModelDir(dest) {
 		return dest, nil // already present: hf will no-op, but skip the noise
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", fmt.Errorf("create models dir: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, buildHFArgs(m, dest)...)
+	cmd := exec.CommandContext(ctx, bin, BuildHFArgs(m, dest)...)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return "", fmt.Errorf("pipe stderr: %w", err)
@@ -169,7 +159,7 @@ func downloadModel(ctx context.Context, m catalog.CatalogModel) (string, error) 
 	if waitErr != nil {
 		return "", fmt.Errorf("download failed: %w", waitErr)
 	}
-	if !isModelDir(dest) {
+	if !paths.IsModelDir(dest) {
 		return "", fmt.Errorf("download finished but %s does not look like a model directory", dest)
 	}
 	return dest, nil
@@ -186,22 +176,22 @@ func pollDownloadProgress(dest string, stop <-chan struct{}) {
 		select {
 		case <-stop:
 			if last > 0 {
-				fmt.Printf("\r  downloaded: %s          \n", humanBytes(uint64(last)))
+				fmt.Printf("\r  downloaded: %s          \n", HumanBytes(uint64(last)))
 			}
 			return
 		case <-ticker.C:
-			size := dirSize(dest)
+			size := DirSize(dest)
 			if size != last {
-				fmt.Printf("\r  downloaded: %s          ", humanBytes(uint64(size)))
+				fmt.Printf("\r  downloaded: %s          ", HumanBytes(uint64(size)))
 				last = size
 			}
 		}
 	}
 }
 
-// dirSize sums the byte size of regular files under dir (non-recursive into
-// unreadable entries). Mirrors sinter catalog's dirSize.
-func dirSize(dir string) int64 {
+// DirSize sums the byte size of regular files under dir (non-recursive
+// into unreadable entries). Mirrors sinter catalog's dirSize.
+func DirSize(dir string) int64 {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0
@@ -218,8 +208,8 @@ func dirSize(dir string) int64 {
 	return total
 }
 
-// humanBytes renders a byte count as B/MB/GB.
-func humanBytes(n uint64) string {
+// HumanBytes renders a byte count as B/MB/GB.
+func HumanBytes(n uint64) string {
 	switch {
 	case n >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
@@ -232,10 +222,10 @@ func humanBytes(n uint64) string {
 	}
 }
 
-// printPullList shows the catalog with RAM-tier guidance for this machine.
-func printPullList() {
-	ram := totalSystemRAM()
-	fmt.Println("Models available to pull (chatllm -pull <name>):")
+// PrintPullList shows the catalog with RAM-tier guidance for this machine.
+func PrintPullList() {
+	ram := sysinfo.TotalSystemRAM()
+	fmt.Println("Models available to pull (sprout-local -pull <name>):")
 	for _, m := range catalog.ModelCatalog {
 		gate := ""
 		switch {

@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/sprout-foundry/seed/core"
+
+	"github.com/sprout-foundry/sprout-local/internal/config"
 )
 
 // toolExecutor executes the local registry via seed's ToolExecutor iface.
@@ -138,7 +140,7 @@ func (e *toolExecutor) runSpec(ctx context.Context, spec *toolSpec, args map[str
 			return "", fmt.Errorf("missing required parameter %q", p.name)
 		}
 	}
-	if name == "run_command" && !toolSafetyBypass {
+	if name == "run_command" && !config.ToolSafetyBypass {
 		cmdline := strings.TrimSpace(args["command"])
 		if !commandApproved(cmdline) {
 			ok, err := e.ui.Confirm("run command: " + cmdline + " — allow? [y/N/a]")

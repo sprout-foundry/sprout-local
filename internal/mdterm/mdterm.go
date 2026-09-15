@@ -1,8 +1,8 @@
-package main
+package mdterm
 
 // ---------------------------------------------------------------------------
 // Terminal markdown rendering. REPL and one-shot output streams through
-// streamPrinter, which styles each line as it completes: headings, lists,
+// StreamPrinter, which styles each line as it completes: headings, lists,
 // block quotes, horizontal rules, fenced code blocks and basic inline
 // spans (bold, italic, code, links, strikethrough) via ANSI escapes.
 //
@@ -27,77 +27,79 @@ import (
 // ANSI SGR escapes used for terminal markdown styling. Bright/basic
 // colors only (no 256-color or truecolor) for maximum portability.
 const (
-	ansiReset   = "\x1b[0m"
-	ansiBold    = "\x1b[1m"
-	ansiItalic  = "\x1b[3m"
-	ansiUnder   = "\x1b[4m"
-	ansiStrike  = "\x1b[9m"
-	ansiRed     = "\x1b[31m"
-	ansiGreen   = "\x1b[32m"
-	ansiYellow  = "\x1b[33m"
-	ansiMagenta = "\x1b[35m"
-	ansiCyan    = "\x1b[36m"
-	ansiGray    = "\x1b[90m"
-	ansiBlue    = "\x1b[94m"
+	AnsiReset   = "\x1b[0m"
+	AnsiBold    = "\x1b[1m"
+	AnsiItalic  = "\x1b[3m"
+	AnsiUnder   = "\x1b[4m"
+	AnsiStrike  = "\x1b[9m"
+	AnsiRed     = "\x1b[31m"
+	AnsiGreen   = "\x1b[32m"
+	AnsiYellow  = "\x1b[33m"
+	AnsiMagenta = "\x1b[35m"
+	AnsiCyan    = "\x1b[36m"
+	AnsiGray    = "\x1b[90m"
+	AnsiBlue    = "\x1b[94m"
 )
 
-// ansiStyle wraps text in the given SGR codes with a single reset.
-func ansiStyle(text string, codes ...string) string {
+// AnsiStyle wraps text in the given SGR codes with a single reset.
+func AnsiStyle(text string, codes ...string) string {
 	if len(codes) == 0 {
 		return text
 	}
-	return strings.Join(codes, "") + text + ansiReset
+	return strings.Join(codes, "") + text + AnsiReset
 }
 
-// mdStyled: stdout is an interactive terminal — render markdown.
-// mdRaw: pipe, file redirect, NO_COLOR or TERM=dumb — stream untouched.
-type mdMode int
+// Mode selects how a StreamPrinter renders its output.
+//
+// Styled: stdout is an interactive terminal — render markdown.
+// Raw: pipe, file redirect, NO_COLOR or TERM=dumb — stream untouched.
+type Mode int
 
 const (
-	mdRaw mdMode = iota
-	mdStyled
+	Raw Mode = iota
+	Styled
 )
 
 // detectMDMode picks the output mode from a stdout file.
-func detectMDMode(f *os.File) mdMode {
+func detectMDMode(f *os.File) Mode {
 	st, err := f.Stat()
 	if err != nil || st.Mode()&os.ModeCharDevice == 0 {
-		return mdRaw // pipe or file: consumers parse text, not visuals
+		return Raw // pipe or file: consumers parse text, not visuals
 	}
 	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
-		return mdRaw
+		return Raw
 	}
-	return mdStyled
+	return Styled
 }
 
-// streamPrinter renders markdown to w line by line as it streams.
-type streamPrinter struct {
+// StreamPrinter renders markdown to w line by line as it streams.
+type StreamPrinter struct {
 	w       io.Writer
-	mode    mdMode
+	mode    Mode
 	inFence bool
 	pending string // partial line not yet terminated by \n
 }
 
-// newStreamPrinter builds a printer with an explicit mode (tests).
-func newStreamPrinter(w io.Writer, mode mdMode) *streamPrinter {
-	return &streamPrinter{w: w, mode: mode}
+// NewStreamPrinter builds a printer with an explicit mode (tests).
+func NewStreamPrinter(w io.Writer, mode Mode) *StreamPrinter {
+	return &StreamPrinter{w: w, mode: mode}
 }
 
-// newTermPrinter builds a printer for stdout, detecting the mode.
-func newTermPrinter(f *os.File) *streamPrinter {
-	return &streamPrinter{w: f, mode: detectMDMode(f)}
+// NewTermPrinter builds a printer for stdout, detecting the mode.
+func NewTermPrinter(f *os.File) *StreamPrinter {
+	return &StreamPrinter{w: f, mode: detectMDMode(f)}
 }
 
-// stdoutPrinter is the process-wide output printer for streamed responses.
-func stdoutPrinter() *streamPrinter { return newTermPrinter(os.Stdout) }
+// StdoutPrinter is the process-wide output printer for streamed responses.
+func StdoutPrinter() *StreamPrinter { return NewTermPrinter(os.Stdout) }
 
-// writeDelta adapts the printer to an onToken-style callback.
-func (p *streamPrinter) writeDelta(delta string) { p.Write(delta) }
+// WriteDelta adapts the printer to an onToken-style callback.
+func (p *StreamPrinter) WriteDelta(delta string) { p.Write(delta) }
 
 // Write buffers a delta and renders every line it completes. In raw mode
 // deltas pass straight through.
-func (p *streamPrinter) Write(delta string) {
-	if p.mode == mdRaw {
+func (p *StreamPrinter) Write(delta string) {
+	if p.mode == Raw {
 		fmt.Fprint(p.w, delta)
 		return
 	}
@@ -114,8 +116,8 @@ func (p *streamPrinter) Write(delta string) {
 }
 
 // Close flushes a trailing partial line (responses need not end in \n).
-func (p *streamPrinter) Close() {
-	if p.mode == mdRaw || p.pending == "" {
+func (p *StreamPrinter) Close() {
+	if p.mode == Raw || p.pending == "" {
 		return
 	}
 	fmt.Fprint(p.w, p.render(p.pending))
@@ -123,8 +125,8 @@ func (p *streamPrinter) Close() {
 }
 
 // render converts one complete markdown line to terminal text.
-func (p *streamPrinter) render(line string) string {
-	if p.mode == mdRaw {
+func (p *StreamPrinter) render(line string) string {
+	if p.mode == Raw {
 		return line
 	}
 	trimmed := strings.TrimSpace(line)
@@ -132,7 +134,7 @@ func (p *streamPrinter) render(line string) string {
 	// Fenced code blocks: dim markers, indent contents, never inline-style.
 	if strings.HasPrefix(trimmed, "```") {
 		p.inFence = !p.inFence
-		return ansiStyle(trimmed, ansiGray)
+		return AnsiStyle(trimmed, AnsiGray)
 	}
 	if p.inFence {
 		return "  " + highlightCode(line)
@@ -152,10 +154,10 @@ var (
 // through inline span styling.
 func renderBlock(line string) string {
 	if mdRuleRe.MatchString(line) {
-		return ansiStyle(strings.Repeat("─", 40), ansiGray)
+		return AnsiStyle(strings.Repeat("─", 40), AnsiGray)
 	}
 	if m := mdHeadingRe.FindStringSubmatch(line); m != nil {
-		return ansiStyle(strings.TrimSpace(m[2]), ansiBold, ansiBlue)
+		return AnsiStyle(strings.TrimSpace(m[2]), AnsiBold, AnsiBlue)
 	}
 	if m := mdItemRe.FindStringSubmatch(line); m != nil {
 		label := m[2]
@@ -164,10 +166,10 @@ func renderBlock(line string) string {
 		} else {
 			label = "• " // bullets: normalize - * + to •
 		}
-		return m[1] + ansiStyle(label, ansiMagenta) + renderInline(m[4])
+		return m[1] + AnsiStyle(label, AnsiMagenta) + renderInline(m[4])
 	}
 	if m := mdQuoteRe.FindStringSubmatch(line); m != nil {
-		return ansiStyle("▌ ", ansiMagenta) + ansiStyle(renderInline(m[1]), ansiItalic)
+		return AnsiStyle("▌ ", AnsiMagenta) + AnsiStyle(renderInline(m[1]), AnsiItalic)
 	}
 	return renderInline(line)
 }
@@ -190,10 +192,10 @@ var codeTokenRules = []struct {
 	re  *regexp.Regexp
 	col string
 }{
-	{regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|` + "`" + `[^` + "`" + `]*` + "`"), ansiGreen},
-	{regexp.MustCompile(`(?://[^\n]*|#[^\n]*|/\*.*?\*/)`), ansiGray},
-	{regexp.MustCompile(`\b(?:func|return|if|else|for|range|while|import|package|class|def|const|let|var|type|struct|interface|switch|case|default|break|continue|go|defer|new|public|private|static|void|int|string|bool|float|true|false|nil|null|none|True|False|None)\b`), ansiBlue},
-	{regexp.MustCompile(`\b\d+(?:\.\d+)?\b`), ansiYellow},
+	{regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|` + "`" + `[^` + "`" + `]*` + "`"), AnsiGreen},
+	{regexp.MustCompile(`(?://[^\n]*|#[^\n]*|/\*.*?\*/)`), AnsiGray},
+	{regexp.MustCompile(`\b(?:func|return|if|else|for|range|while|import|package|class|def|const|let|var|type|struct|interface|switch|case|default|break|continue|go|defer|new|public|private|static|void|int|string|bool|float|true|false|nil|null|none|True|False|None)\b`), AnsiBlue},
+	{regexp.MustCompile(`\b\d+(?:\.\d+)?\b`), AnsiYellow},
 }
 
 // phEncode returns the placeholder for lifted-token index n.
@@ -210,7 +212,7 @@ func highlightCode(line string) string {
 	}
 	for _, rule := range codeTokenRules {
 		line = rule.re.ReplaceAllStringFunc(line, func(m string) string {
-			return keep(ansiStyle(m, rule.col))
+			return keep(AnsiStyle(m, rule.col))
 		})
 	}
 	return phRe.ReplaceAllStringFunc(line, func(m string) string {
@@ -235,23 +237,23 @@ func renderInline(s string) string {
 	}
 	s = mdLinkRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := mdLinkRe.FindStringSubmatch(m)
-		return keep(ansiStyle(sub[1], ansiUnder) + ansiStyle(" ("+sub[2]+")", ansiGray))
+		return keep(AnsiStyle(sub[1], AnsiUnder) + AnsiStyle(" ("+sub[2]+")", AnsiGray))
 	})
 	s = mdInlineCodeRe.ReplaceAllStringFunc(s, func(m string) string {
-		return keep(ansiStyle(strings.Trim(m, "`"), ansiCyan))
+		return keep(AnsiStyle(strings.Trim(m, "`"), AnsiCyan))
 	})
 	s = mdBoldRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := mdBoldRe.FindStringSubmatch(m)
 		if sub[1] == "" {
-			return ansiStyle(sub[2], ansiBold)
+			return AnsiStyle(sub[2], AnsiBold)
 		}
-		return ansiStyle(sub[1], ansiBold)
+		return AnsiStyle(sub[1], AnsiBold)
 	})
 	s = mdStrikeRe.ReplaceAllStringFunc(s, func(m string) string {
-		return ansiStyle(mdStrikeRe.FindStringSubmatch(m)[1], ansiStrike)
+		return AnsiStyle(mdStrikeRe.FindStringSubmatch(m)[1], AnsiStrike)
 	})
 	s = mdItalicRe.ReplaceAllStringFunc(s, func(m string) string {
-		return ansiStyle(mdItalicRe.FindStringSubmatch(m)[1], ansiItalic)
+		return AnsiStyle(mdItalicRe.FindStringSubmatch(m)[1], AnsiItalic)
 	})
 	return mdCodePhRe.ReplaceAllStringFunc(s, func(m string) string {
 		i, err := strconv.Atoi(mdCodePhRe.FindStringSubmatch(m)[1])

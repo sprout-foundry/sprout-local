@@ -1,6 +1,10 @@
 package main
 
-import "log"
+import (
+	"log"
+
+	"github.com/sprout-foundry/sprout-local/internal/paths"
+)
 
 // modelBackend probes the sinter model at startup and returns
 // (engineLabel, modelLabel) for the status line. Fatals with an actionable
@@ -12,7 +16,7 @@ func modelBackend() (engine, model string) {
 		log.Fatalf("No local model found.\n"+
 			"Checked the models root: %s (no model directories there).\n"+
 			"Point SPROUT_LOCAL_MODEL_DIR at an MLX-format model directory, or run\n"+
-			"'sprout-local -pull' to list and download a model.\n", modelsRoot())
+			"'sprout-local -pull' to list and download a model.\n", paths.ModelsRoot())
 	}
 	if _, err := loadSinterModel(); err != nil {
 		log.Fatalf("Sinter failed to load %s: %v", dir, err)
