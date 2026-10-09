@@ -2,7 +2,7 @@ module github.com/sprout-foundry/sprout-local
 
 go 1.26.0
 
-require github.com/sprout-foundry/sinter v0.5.0
+require github.com/sprout-foundry/sinter v0.7.0
 
 require golang.org/x/sys v0.45.0
 
