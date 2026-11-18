@@ -184,3 +184,7 @@ repo vendors nothing).
 - **Machine context in every system prompt** — OS, arch, shell, and cwd are appended (`environmentContext`), so small models stop guessing `ip addr` on macOS. `-s` text and the env note travel together.
 - **Session logs** — every exchange appends to `~/.sprout-local/sessions/`, so scrollback survives terminal loss.
 - **Download stays app-level** — sinter's README keeps the catalog separate from the engine "so apps can keep their own list"; the engine has no download API. The `hf` CLI mechanics (pipe draining, disk-based progress polling) are ported from sprout's `localmodel.EnsureModel`.
+
+## Comments
+
+Code gets clear names, and comments only where the reason isn't obvious from the code. When you touch old code, trim its comment blocks. Rationale goes in specs and commit messages instead.
